@@ -4,12 +4,32 @@
 
 BDP (Big Data Platform) Agent는 AWS Lambda 기반 서버리스 아키텍처로 구현된 지능형 로그 분석 및 자동 복구 시스템입니다.
 
-### LLM Provider 아키텍처
+### Provider Abstraction Pattern
 
-| 환경 | Provider | 설명 |
-|------|----------|------|
-| **On-Premise** | vLLM | 자체 호스팅 LLM 서버 (OpenAI Compatible API) |
-| **Public/Mock** | Gemini | Google Gemini 2.5 Pro/Flash API |
+BDP Agent는 Provider Abstraction 패턴을 사용하여 LLM과 AWS 서비스를 추상화합니다. 이를 통해 프로덕션(On-Premise/AWS)과 테스트(Public/Mock) 환경에서 동일한 코드로 동작합니다.
+
+#### LLM Provider
+
+| 환경 | Provider | 설명 | 환경 변수 |
+|------|----------|------|----------|
+| **On-Premise** | VLLMProvider | 자체 호스팅 LLM 서버 (OpenAI Compatible API) | `LLM_PROVIDER=vllm` |
+| **Public** | GeminiProvider | Google Gemini 2.5 Pro/Flash API | `LLM_PROVIDER=gemini` |
+| **Mock** | MockLLMProvider | 테스트용 내장 Mock | `LLM_MOCK=true` |
+
+#### AWS Provider
+
+| 환경 | Provider | 설명 | 환경 변수 |
+|------|----------|------|----------|
+| **Production** | AWS*Provider | 실제 AWS 서비스 호출 | (기본값) |
+| **Mock** | Mock*Provider | AWS 없이 로직 테스트 | `AWS_MOCK=true` |
+
+**Mock 지원 AWS 서비스:**
+- CloudWatch (Metrics, Logs, Anomaly Detection)
+- DynamoDB (Deduplication, Workflow State)
+- RDS Data API (Unified Logs)
+- Lambda (Function Invocation)
+- EventBridge (Event Publishing)
+- Step Functions (Workflow Execution)
 
 ### 핵심 특징
 - **ReAct 패턴**: Plan → Execute → Reflect → Replan 사이클
@@ -232,6 +252,82 @@ Attributes:
   - parameters (Map)
   - result (Map)
   - rollback_available (Boolean)
+```
+
+---
+
+## Provider Architecture
+
+### Provider Pattern Overview
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Provider Abstraction Layer                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                         LLMClient                                    │    │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │    │
+│  │  │ VLLMProvider│  │GeminiProvider│ │MockLLMProvider│                │    │
+│  │  │ (On-Prem)   │  │ (Public)    │  │ (Test)      │                  │    │
+│  │  └─────────────┘  └─────────────┘  └─────────────┘                  │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                         AWSClient                                    │    │
+│  │  ┌───────────────────────────────────────────────────────────────┐  │    │
+│  │  │                    AWS Providers (Production)                  │  │    │
+│  │  │  CloudWatch | DynamoDB | RDS Data | Lambda | EventBridge | SFN │  │    │
+│  │  └───────────────────────────────────────────────────────────────┘  │    │
+│  │  ┌───────────────────────────────────────────────────────────────┐  │    │
+│  │  │                    Mock Providers (Testing)                    │  │    │
+│  │  │  MockCW    | MockDDB  | MockRDS  | MockLam | MockEB    |MockSFN│  │    │
+│  │  └───────────────────────────────────────────────────────────────┘  │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Environment Configuration
+
+```bash
+# 프로덕션 환경 (On-Premise vLLM + AWS)
+export LLM_PROVIDER=vllm
+export VLLM_BASE_URL=http://your-vllm-server:8000/v1
+export VLLM_MODEL_NAME=your-model-name
+# AWS_MOCK은 설정하지 않음 (기본값: AWS 사용)
+
+# 개발 환경 (Public Gemini + Mock AWS)
+export LLM_PROVIDER=gemini
+export GEMINI_API_KEY=your-api-key
+export GEMINI_MODEL_ID=gemini-2.5-flash
+export AWS_MOCK=true
+
+# 로컬 테스트 환경 (전체 Mock)
+export LLM_MOCK=true
+export AWS_MOCK=true
+```
+
+### Provider Selection Logic
+
+```python
+# LLMClient 초기화
+if os.environ.get('LLM_MOCK', '').lower() == 'true':
+    provider = MockLLMProvider()     # 외부 의존성 없음
+elif os.environ.get('LLM_PROVIDER') == 'gemini':
+    provider = GeminiProvider()      # Google Gemini API
+else:
+    provider = VLLMProvider()        # On-Prem vLLM 서버
+
+# AWSClient 초기화
+if os.environ.get('AWS_MOCK', '').lower() == 'true':
+    cloudwatch = MockCloudWatchProvider()
+    dynamodb = MockDynamoDBProvider()
+    # ... 모든 AWS 서비스 Mock 사용
+else:
+    cloudwatch = AWSCloudWatchProvider()
+    dynamodb = AWSDynamoDBProvider()
+    # ... 실제 AWS 서비스 사용
 ```
 
 ---

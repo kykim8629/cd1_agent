@@ -25,6 +25,7 @@ bdp-agent/
 │   ├── services/           # 비즈니스 로직
 │   │   ├── __init__.py
 │   │   ├── llm_client.py         # vLLM/Gemini 통합 클라이언트
+│   │   ├── aws_client.py         # AWS 서비스 통합 클라이언트 (Mock 지원)
 │   │   ├── reflection_engine.py
 │   │   ├── log_collector.py
 │   │   └── remediation_executor.py
@@ -948,7 +949,142 @@ class LLMClient:
         )
 ```
 
-### 3.2 Reflection Engine
+### 3.2 AWS Client (AWS / Mock 통합)
+
+AWS 서비스 호출을 위한 추상화 레이어. 환경 변수로 Mock 모드 활성화 가능.
+
+```python
+# src/services/aws_client.py
+import os
+from abc import ABC, abstractmethod
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+import structlog
+
+logger = structlog.get_logger()
+
+
+class BaseCloudWatchProvider(ABC):
+    """CloudWatch Provider 추상 클래스"""
+
+    @abstractmethod
+    def get_metric_data(self, namespace: str, metric_name: str,
+                        dimensions: List[Dict], start_time: datetime,
+                        end_time: datetime, period: int = 300) -> Dict[str, Any]:
+        pass
+
+    @abstractmethod
+    def get_anomaly_detection_result(self, namespace: str, metric_name: str,
+                                     dimensions: List[Dict]) -> Dict[str, Any]:
+        pass
+
+
+class AWSCloudWatchProvider(BaseCloudWatchProvider):
+    """AWS CloudWatch Provider (Production)"""
+
+    def __init__(self):
+        import boto3
+        self.cloudwatch = boto3.client('cloudwatch')
+        self.logs = boto3.client('logs')
+
+    def get_metric_data(self, namespace: str, metric_name: str,
+                        dimensions: List[Dict], start_time: datetime,
+                        end_time: datetime, period: int = 300) -> Dict[str, Any]:
+        response = self.cloudwatch.get_metric_data(
+            MetricDataQueries=[{
+                'Id': 'm1',
+                'MetricStat': {
+                    'Metric': {
+                        'Namespace': namespace,
+                        'MetricName': metric_name,
+                        'Dimensions': dimensions
+                    },
+                    'Period': period,
+                    'Stat': 'Average'
+                }
+            }],
+            StartTime=start_time,
+            EndTime=end_time
+        )
+        return {
+            'timestamps': response['MetricDataResults'][0].get('Timestamps', []),
+            'values': response['MetricDataResults'][0].get('Values', [])
+        }
+
+
+class MockCloudWatchProvider(BaseCloudWatchProvider):
+    """Mock CloudWatch Provider for testing"""
+
+    def __init__(self):
+        self.logger = logger.bind(service="mock_cloudwatch")
+
+    def get_metric_data(self, namespace: str, metric_name: str,
+                        dimensions: List[Dict], start_time: datetime,
+                        end_time: datetime, period: int = 300) -> Dict[str, Any]:
+        import random
+        from datetime import timedelta
+
+        # Generate mock time series data
+        timestamps = []
+        values = []
+        current = start_time
+        while current <= end_time:
+            timestamps.append(current)
+            base_value = 50 + random.uniform(-10, 10)
+            if random.random() > 0.9:  # Occasional spikes
+                base_value *= 2.5
+            values.append(base_value)
+            current += timedelta(seconds=period)
+
+        return {'timestamps': timestamps, 'values': values}
+
+    def get_anomaly_detection_result(self, namespace: str, metric_name: str,
+                                     dimensions: List[Dict]) -> Dict[str, Any]:
+        import random
+        is_anomaly = random.random() > 0.7
+        return {
+            'is_anomaly': is_anomaly,
+            'anomaly_score': random.uniform(0.7, 0.95) if is_anomaly else random.uniform(0.1, 0.3)
+        }
+
+
+class AWSClient:
+    """통합 AWS 클라이언트 - Provider 자동 선택"""
+
+    def __init__(self, mock_mode: Optional[bool] = None):
+        """
+        AWSClient 초기화.
+
+        환경 변수:
+            AWS_MOCK: 'true'로 설정 시 mock provider 사용
+        """
+        if mock_mode is None:
+            mock_mode = os.environ.get('AWS_MOCK', '').lower() == 'true'
+
+        self.mock_mode = mock_mode
+        self.logger = logger.bind(service="aws_client", mock_mode=mock_mode)
+
+        if mock_mode:
+            self.cloudwatch = MockCloudWatchProvider()
+            # MockDynamoDBProvider, MockLambdaProvider 등도 동일하게 구성
+            self.logger.info("aws_client_initialized", mode="mock")
+        else:
+            self.cloudwatch = AWSCloudWatchProvider()
+            self.logger.info("aws_client_initialized", mode="aws")
+```
+
+**지원하는 AWS 서비스 Mock:**
+
+| 서비스 | AWS Provider | Mock Provider | 용도 |
+|--------|-------------|---------------|------|
+| CloudWatch | `AWSCloudWatchProvider` | `MockCloudWatchProvider` | 메트릭 조회, 이상 탐지, 로그 쿼리 |
+| DynamoDB | `AWSDynamoDBProvider` | `MockDynamoDBProvider` | Deduplication, 워크플로우 상태 |
+| RDS Data API | `AWSRDSDataProvider` | `MockRDSDataProvider` | 통합 로그 저장소 |
+| Lambda | `AWSLambdaProvider` | `MockLambdaProvider` | 함수 호출, 설정 조회 |
+| EventBridge | `AWSEventBridgeProvider` | `MockEventBridgeProvider` | 이벤트 발행 |
+| Step Functions | `AWSStepFunctionsProvider` | `MockStepFunctionsProvider` | 워크플로우 실행 |
+
+### 3.3 Reflection Engine
 
 신뢰도 평가 및 리플렉션 엔진:
 

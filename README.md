@@ -6,12 +6,22 @@ AWS Lambda 기반 서버리스 로그 분석 및 자동 복구 에이전트
 
 BDP Agent는 AWS 인프라의 로그를 주기적으로 분석하여 이상을 감지하고, LLM을 활용해 근본 원인을 분석한 후, 신뢰도 기반으로 자동 또는 수동 복구를 수행하는 지능형 에이전트입니다.
 
-### LLM Provider 구성
+### Provider 구성
+
+#### LLM Provider
 
 | 환경 | Provider | 모델 | 용도 |
 |------|----------|------|------|
 | **On-Premise** | vLLM | 자체 호스팅 LLM | 프로덕션 분석 |
 | **Public (Mock)** | Google Gemini | Gemini 2.5 Pro/Flash | 개발/테스트 |
+| **로컬 테스트** | Mock LLM | 내장 Mock | AWS/LLM 없이 로직 테스트 |
+
+#### AWS Provider
+
+| 환경 | Provider | 용도 |
+|------|----------|------|
+| **Production** | AWS | 실제 AWS 서비스 호출 |
+| **Public/로컬** | Mock | AWS 없이 전체 로직 테스트 |
 
 ### 주요 기능
 
@@ -140,17 +150,41 @@ cdk deploy
 
 #### Environment Variables
 
+**Mock Mode (Public/Local Testing)**
+
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `RDS_CLUSTER_ARN` | RDS Aurora Serverless 클러스터 ARN | Required |
-| `RDS_SECRET_ARN` | RDS 접속 정보가 담긴 Secrets Manager ARN | Required |
-| `RDS_DATABASE` | 데이터베이스 이름 | `unified_logs` |
+| `AWS_MOCK` | AWS Mock 모드 활성화 (`true`/`false`) | `false` |
+| `LLM_MOCK` | LLM Mock 모드 활성화 (`true`/`false`) | `false` |
+
+**LLM Configuration**
+
+| Variable | Description | Default |
+|----------|-------------|---------|
 | `LLM_PROVIDER` | LLM 제공자 (`vllm` 또는 `gemini`) | `vllm` |
 | `VLLM_BASE_URL` | vLLM 서버 엔드포인트 (On-Prem) | `http://localhost:8000/v1` |
 | `VLLM_MODEL_NAME` | vLLM 모델 이름 | Required (vllm 사용 시) |
 | `GEMINI_API_KEY` | Gemini API 키 (Public Mock) | Required (gemini 사용 시) |
-| `GEMINI_MODEL_ID` | Gemini 모델 ID | `gemini-2.5-pro` |
+| `GEMINI_MODEL_ID` | Gemini 모델 ID | `gemini-2.5-flash` |
+
+**AWS Configuration**
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `RDS_CLUSTER_ARN` | RDS Aurora Serverless 클러스터 ARN | Required (AWS 모드) |
+| `RDS_SECRET_ARN` | RDS 접속 정보가 담긴 Secrets Manager ARN | Required (AWS 모드) |
+| `RDS_DATABASE` | 데이터베이스 이름 | `unified_logs` |
 | `DEDUP_TABLE` | DynamoDB 중복 제거 테이블 이름 | `bdp-anomaly-tracking` |
+
+**Quick Start for Mock Mode**
+
+```bash
+# AWS와 LLM 없이 로컬에서 로직 테스트
+export AWS_MOCK=true
+export LLM_MOCK=true
+python -m examples.services.aws_client  # AWS Mock 테스트
+python -m examples.services.llm_client  # LLM Mock 테스트
+```
 
 #### DynamoDB Tables
 
