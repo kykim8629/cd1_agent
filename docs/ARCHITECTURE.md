@@ -32,7 +32,8 @@ BDP Agent는 Provider Abstraction 패턴을 사용하여 LLM과 AWS 서비스를
 - Step Functions (Workflow Execution)
 
 ### 핵심 특징
-- **ReAct 패턴**: Plan → Execute → Reflect → Replan 사이클
+- **LangGraph Agent**: 동적 ReAct 루프, Reflect & Replan 패턴
+- **하이브리드 오케스트레이션**: Step Functions (외부 워크플로우) + LangGraph (내부 에이전트)
 - **신뢰도 기반 자동화**: 0.85+ 자동 실행, 0.5-0.85 승인 요청
 - **비용 최적화**: Field Indexing, Hierarchical Summarization, Deduplication
 - **서버리스**: Lambda + Step Functions + EventBridge
@@ -329,6 +330,255 @@ else:
     dynamodb = AWSDynamoDBProvider()
     # ... 실제 AWS 서비스 사용
 ```
+
+---
+
+## Agent Framework (LangGraph)
+
+### Why LangGraph?
+
+현재 Step Functions 기반 아키텍처는 **정적 워크플로우**로, 분기와 루프가 미리 정의되어 있습니다. 그러나 ReAct 패턴과 Reflect/Replan 루프는 **LLM이 다음 행동을 동적으로 결정**하는 에이전트 패턴이 더 적합합니다.
+
+| 구분 | Step Functions | LangGraph |
+|------|----------------|-----------|
+| 워크플로우 유형 | 정적 (사전 정의) | 동적 (LLM 결정) |
+| 분기 조건 | 명시적 Choice 상태 | LLM 추론 기반 |
+| 도구 호출 | Lambda 단위 | 세분화된 Tool 단위 |
+| 재시도/Replan | 고정 로직 | 적응형 |
+| 적합 영역 | 오케스트레이션, 승인, 실행 | 분석, 추론, 계획 |
+
+### Hybrid Architecture
+
+Step Functions와 LangGraph를 결합하여 각 컴포넌트의 강점을 활용합니다.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Hybrid Orchestration Architecture                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+                           ┌──────────────────┐
+                           │  EventBridge     │
+                           │  (5-10분 주기)   │
+                           └────────┬─────────┘
+                                    │
+                                    ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                         Step Functions (Outer Orchestration)                   │
+│                                                                                │
+│   ┌──────────┐         ┌──────────────────────────────────┐        ┌────────┐│
+│   │ Detect   │────────▶│                                  │───────▶│Execute ││
+│   │ Anomaly  │         │      LangGraph Agent             │        │Actions ││
+│   │ (Lambda) │         │      (Analysis Lambda)           │        │(Lambda)││
+│   └──────────┘         │                                  │        └────────┘│
+│                        │  ┌─────────────────────────────┐ │             │     │
+│                        │  │        ReAct Loop           │ │             │     │
+│                        │  │  ┌───────┐    ┌──────────┐  │ │             │     │
+│                        │  │  │ Think │───▶│   Act    │  │ │             ▼     │
+│                        │  │  └───────┘    └────┬─────┘  │ │       ┌────────┐ │
+│                        │  │       ▲            │        │ │       │Reflect │ │
+│                        │  │       │            ▼        │ │       │(Agent) │ │
+│                        │  │  ┌────┴────┐  ┌────────┐   │ │       └───┬────┘ │
+│                        │  │  │ Reflect │◀─│Observe │   │ │           │      │
+│                        │  │  └─────────┘  └────────┘   │ │           │      │
+│                        │  └─────────────────────────────┘ │           │      │
+│                        │                                  │           │      │
+│                        │  Tools:                          │           ▼      │
+│                        │  - query_cloudwatch              │    ┌───────────┐ │
+│                        │  - query_rds_logs                │    │  Replan?  │ │
+│                        │  - search_knowledge_base         │    └─────┬─────┘ │
+│                        │  - analyze_metrics               │          │       │
+│                        │  - evaluate_confidence           │          │       │
+│                        └──────────────────────────────────┘          │       │
+│                                                                       │       │
+│                              ◀────────────────────────────────────────┘       │
+└───────────────────────────────────────────────────────────────────────────────┘
+```
+
+### LangGraph Agent 구성
+
+#### State Definition
+
+```python
+from typing import TypedDict, Annotated, Sequence
+from langchain_core.messages import BaseMessage
+import operator
+
+class AgentState(TypedDict):
+    """LangGraph Agent 상태 정의."""
+    messages: Annotated[Sequence[BaseMessage], operator.add]
+    anomaly_data: dict           # 감지된 이상 현상 정보
+    log_summary: str             # 계층적 요약된 로그
+    analysis_result: dict        # 분석 결과
+    confidence_score: float      # 신뢰도 점수
+    remediation_plan: dict       # 복구 계획
+    iteration_count: int         # 현재 반복 횟수
+    max_iterations: int          # 최대 반복 횟수
+```
+
+#### Tool Definitions
+
+```python
+from langchain_core.tools import tool
+
+@tool
+def query_cloudwatch_metrics(namespace: str, metric_name: str, period: int) -> dict:
+    """CloudWatch 메트릭을 조회합니다."""
+    pass
+
+@tool
+def query_rds_logs(service_filter: list, severity: str, time_range_minutes: int) -> list:
+    """RDS 통합 로그를 조회합니다 (Field Indexing 사용)."""
+    pass
+
+@tool
+def search_knowledge_base(query: str, top_k: int = 5) -> list:
+    """지식 베이스에서 관련 문서를 검색합니다."""
+    pass
+
+@tool
+def analyze_patterns(logs: list, metrics: dict) -> dict:
+    """로그와 메트릭 패턴을 분석합니다."""
+    pass
+
+@tool
+def evaluate_confidence(analysis: dict, evidence: list) -> float:
+    """분석 결과의 신뢰도를 평가합니다."""
+    pass
+
+@tool
+def propose_remediation(root_cause: str, context: dict) -> dict:
+    """복구 조치를 제안합니다."""
+    pass
+```
+
+#### Graph Definition
+
+```python
+from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolNode
+
+def create_analysis_agent():
+    """LangGraph 분석 에이전트 생성."""
+
+    # 노드 정의
+    def think_node(state: AgentState) -> AgentState:
+        """현재 상태를 분석하고 다음 행동 결정."""
+        pass
+
+    def act_node(state: AgentState) -> AgentState:
+        """도구를 사용하여 정보 수집."""
+        pass
+
+    def observe_node(state: AgentState) -> AgentState:
+        """도구 실행 결과 관찰."""
+        pass
+
+    def reflect_node(state: AgentState) -> AgentState:
+        """분석 결과 검토 및 신뢰도 평가."""
+        pass
+
+    def should_continue(state: AgentState) -> str:
+        """계속 분석할지 결정."""
+        if state["confidence_score"] >= 0.7:
+            return "complete"
+        if state["iteration_count"] >= state["max_iterations"]:
+            return "complete"
+        return "continue"
+
+    # 그래프 구성
+    workflow = StateGraph(AgentState)
+
+    workflow.add_node("think", think_node)
+    workflow.add_node("act", ToolNode(tools))
+    workflow.add_node("observe", observe_node)
+    workflow.add_node("reflect", reflect_node)
+
+    workflow.set_entry_point("think")
+    workflow.add_edge("think", "act")
+    workflow.add_edge("act", "observe")
+    workflow.add_edge("observe", "reflect")
+
+    workflow.add_conditional_edges(
+        "reflect",
+        should_continue,
+        {
+            "continue": "think",
+            "complete": END
+        }
+    )
+
+    return workflow.compile()
+```
+
+### Step Functions Integration
+
+LangGraph Agent는 Lambda 내부에서 실행되며, Step Functions는 외부 오케스트레이션을 담당합니다.
+
+```json
+{
+  "Comment": "BDP Agent Hybrid Workflow",
+  "StartAt": "DetectAnomalies",
+  "States": {
+    "DetectAnomalies": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:...:bdp-detection",
+      "Next": "CheckAnomalies"
+    },
+    "CheckAnomalies": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.anomalies_detected",
+          "BooleanEquals": true,
+          "Next": "AnalyzeWithAgent"
+        }
+      ],
+      "Default": "NoAnomalies"
+    },
+    "AnalyzeWithAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:...:bdp-analysis",
+      "Comment": "LangGraph Agent runs inside this Lambda",
+      "Next": "EvaluateConfidence"
+    },
+    "EvaluateConfidence": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.confidence_score",
+          "NumericGreaterThanEquals": 0.85,
+          "Next": "AutoExecute"
+        },
+        {
+          "Variable": "$.confidence_score",
+          "NumericGreaterThanEquals": 0.5,
+          "Next": "RequestApproval"
+        }
+      ],
+      "Default": "Escalate"
+    }
+  }
+}
+```
+
+### LangGraph vs 다른 Agent Framework 비교
+
+| Framework | 장점 | 단점 | BDP Agent 적합도 |
+|-----------|------|------|------------------|
+| **LangGraph** | 상태 기반 그래프, 루프 지원, LangChain 호환 | 학습 곡선 | ⭐⭐⭐ 최적 |
+| Claude Agent SDK | Anthropic 최적화, 간단한 API | Claude 전용 | ⭐⭐ vLLM 미지원 |
+| CrewAI | 멀티 에이전트 협업 | 단일 에이전트에 과도 | ⭐ 과도한 복잡도 |
+| AutoGen | 대화형 협업 | 설정 복잡 | ⭐ 부적합 |
+
+### 구현 로드맵
+
+| Phase | 내용 | 우선순위 |
+|-------|------|----------|
+| Phase 1 | LangGraph 기본 통합, Tool 정의 | 높음 |
+| Phase 2 | ReAct 루프 구현, 신뢰도 평가 | 높음 |
+| Phase 3 | Reflect & Replan 루프 | 중간 |
+| Phase 4 | Knowledge Base 연동 (RAG) | 중간 |
+| Phase 5 | 멀티 에이전트 확장 (필요시) | 낮음 |
 
 ---
 

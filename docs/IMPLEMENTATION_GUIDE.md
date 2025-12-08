@@ -55,6 +55,12 @@ python-json-logger>=2.0.0
 openai>=1.0.0            # vLLM OpenAI Compatible API
 google-generativeai>=0.8.0  # Gemini API
 httpx>=0.27.0            # HTTP 클라이언트
+
+# LangGraph Agent Framework
+langgraph>=0.2.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0  # vLLM 호환
+langchain-google-genai>=2.0.0  # Gemini 호환
 ```
 
 ---
@@ -2275,3 +2281,839 @@ class TestReflectionEngine:
 - [ ] CloudWatch Dashboards
 - [ ] X-Ray tracing 활성화
 - [ ] 알람 설정 (에러율, 지연시간)
+
+---
+
+## Phase 7: LangGraph Agent Implementation
+
+### 7.1 Why LangGraph?
+
+BDP Agent의 분석 단계에서는 동적인 ReAct 패턴과 Reflect/Replan 루프가 필요합니다. LangGraph를 선택한 이유:
+
+| 요구사항 | LangGraph 지원 | 설명 |
+|---------|---------------|------|
+| ReAct 패턴 | ✅ Native | Think → Act → Observe 루프 내장 |
+| 동적 도구 호출 | ✅ 완벽 지원 | 런타임에 도구 선택 및 호출 |
+| 상태 관리 | ✅ TypedDict | 분석 컨텍스트 유지 |
+| Reflect/Replan | ✅ 조건부 Edge | 신뢰도 기반 재분석 루프 |
+| 스트리밍 | ✅ 내장 | 실시간 진행 상황 모니터링 |
+
+### 7.2 Agent State Definition
+
+```python
+# src/agent/state.py
+from typing import TypedDict, Annotated, List, Dict, Any, Optional
+from operator import add
+from langgraph.graph import MessagesState
+
+
+class AnalysisContext(TypedDict):
+    """분석 컨텍스트"""
+    anomaly_id: str
+    service_name: str
+    anomaly_type: str
+    severity: str
+    sample_logs: List[Dict[str, Any]]
+
+
+class AgentState(MessagesState):
+    """BDP Agent 상태 정의
+
+    LangGraph의 TypedDict 기반 상태 관리로
+    분석 과정의 모든 컨텍스트를 추적합니다.
+    """
+    # 입력 정보
+    anomalies: List[AnalysisContext]
+    workflow_id: str
+
+    # 분석 결과
+    root_cause: Optional[str]
+    evidence: Annotated[List[str], add]  # 누적
+    recommended_actions: List[Dict[str, Any]]
+
+    # 신뢰도 평가
+    confidence: float
+    reflection_notes: Optional[str]
+
+    # 제어 흐름
+    iteration_count: int
+    max_iterations: int
+    requires_replan: bool
+
+    # 도구 호출 추적
+    tool_calls_made: Annotated[List[str], add]
+
+
+class ToolObservation(TypedDict):
+    """도구 실행 결과"""
+    tool_name: str
+    result: Any
+    success: bool
+    error: Optional[str]
+```
+
+### 7.3 Agent Tools Definition
+
+```python
+# src/agent/tools.py
+from typing import Dict, Any, List, Optional
+from datetime import datetime, timedelta
+from langchain_core.tools import tool
+import structlog
+
+logger = structlog.get_logger()
+
+
+@tool
+def query_cloudwatch_metrics(
+    namespace: str,
+    metric_name: str,
+    dimensions: List[Dict[str, str]],
+    start_minutes_ago: int = 30
+) -> Dict[str, Any]:
+    """CloudWatch에서 메트릭 데이터를 조회합니다.
+
+    Args:
+        namespace: AWS 서비스 namespace (예: "AWS/Lambda", "AWS/RDS")
+        metric_name: 메트릭 이름 (예: "Errors", "Duration", "CPUUtilization")
+        dimensions: 차원 필터 (예: [{"Name": "FunctionName", "Value": "my-func"}])
+        start_minutes_ago: 조회 시작 시간 (현재로부터 N분 전)
+
+    Returns:
+        메트릭 데이터와 통계 정보
+    """
+    from src.services.aws_client import AWSClient
+
+    client = AWSClient()
+    end_time = datetime.utcnow()
+    start_time = end_time - timedelta(minutes=start_minutes_ago)
+
+    result = client.cloudwatch.get_metric_data(
+        namespace=namespace,
+        metric_name=metric_name,
+        dimensions=dimensions,
+        start_time=start_time,
+        end_time=end_time
+    )
+
+    logger.info(
+        "cloudwatch_metrics_queried",
+        namespace=namespace,
+        metric=metric_name,
+        data_points=len(result.get('values', []))
+    )
+
+    return result
+
+
+@tool
+def query_rds_logs(
+    service_filter: Optional[List[str]] = None,
+    severity_threshold: str = "ERROR",
+    limit: int = 100,
+    start_minutes_ago: int = 30
+) -> List[Dict[str, Any]]:
+    """RDS 통합 로그 저장소에서 로그를 조회합니다.
+
+    Args:
+        service_filter: 조회할 서비스 목록 (None이면 전체)
+        severity_threshold: 최소 심각도 수준 ("DEBUG", "INFO", "WARN", "ERROR", "FATAL")
+        limit: 최대 반환 로그 수
+        start_minutes_ago: 조회 시작 시간 (현재로부터 N분 전)
+
+    Returns:
+        필터링된 로그 목록
+    """
+    from src.services.aws_client import AWSClient
+    import os
+
+    client = AWSClient()
+    end_time = datetime.utcnow()
+    start_time = end_time - timedelta(minutes=start_minutes_ago)
+
+    # Severity 레벨 계층 구조
+    levels = ["DEBUG", "INFO", "WARN", "ERROR", "FATAL"]
+    try:
+        threshold_idx = levels.index(severity_threshold.upper())
+        severity_levels = levels[threshold_idx:]
+    except ValueError:
+        severity_levels = ["ERROR", "FATAL"]
+
+    # RDS Data API 쿼리
+    query = f"""
+        SELECT timestamp, service_name, log_level, message, metadata
+        FROM unified_logs
+        WHERE timestamp BETWEEN :start AND :end
+        AND log_level IN ({','.join(f"'{l}'" for l in severity_levels)})
+    """
+
+    if service_filter:
+        services = ','.join(f"'{s}'" for s in service_filter)
+        query += f" AND service_name IN ({services})"
+
+    query += f" ORDER BY timestamp DESC LIMIT {limit}"
+
+    # 실제 구현에서는 RDS Data API 호출
+    logger.info(
+        "rds_logs_queried",
+        services=service_filter,
+        severity=severity_threshold,
+        limit=limit
+    )
+
+    return []  # 실제 구현에서 결과 반환
+
+
+@tool
+def search_knowledge_base(
+    keywords: List[str],
+    categories: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
+    """로컬 Knowledge Base에서 관련 정보를 검색합니다.
+
+    Args:
+        keywords: 검색 키워드 목록
+        categories: 검색할 카테고리 (예: ["timeout", "connection", "memory"])
+
+    Returns:
+        관련 playbook과 해결 가이드 목록
+    """
+    import os
+    from pathlib import Path
+
+    knowledge_path = Path(__file__).parent.parent / "knowledge" / "playbooks"
+    results = []
+
+    # 카테고리별 파일 검색
+    search_categories = categories or keywords
+
+    for category in search_categories:
+        playbook_file = knowledge_path / f"{category.lower()}.md"
+        if playbook_file.exists():
+            content = playbook_file.read_text()
+            results.append({
+                "category": category,
+                "content": content[:2000],  # 토큰 제한
+                "source": str(playbook_file)
+            })
+
+    logger.info(
+        "knowledge_base_searched",
+        keywords=keywords,
+        results_found=len(results)
+    )
+
+    return results
+
+
+@tool
+def execute_remediation_action(
+    action_type: str,
+    parameters: Dict[str, Any],
+    dry_run: bool = True
+) -> Dict[str, Any]:
+    """복구 조치를 실행합니다.
+
+    Args:
+        action_type: 조치 유형 ("lambda_restart", "rds_parameter", "auto_scaling")
+        parameters: 조치별 파라미터
+        dry_run: True면 시뮬레이션만 수행
+
+    Returns:
+        실행 결과 및 상태
+    """
+    from src.services.aws_client import AWSClient
+
+    client = AWSClient()
+
+    logger.info(
+        "remediation_action_requested",
+        action_type=action_type,
+        dry_run=dry_run
+    )
+
+    if dry_run:
+        return {
+            "status": "dry_run",
+            "action_type": action_type,
+            "parameters": parameters,
+            "would_execute": True
+        }
+
+    # 실제 실행 로직
+    if action_type == "lambda_restart":
+        # Lambda 함수 재시작 로직
+        pass
+    elif action_type == "rds_parameter":
+        # RDS 파라미터 변경 로직
+        pass
+    elif action_type == "auto_scaling":
+        # Auto Scaling 조정 로직
+        pass
+
+    return {
+        "status": "executed",
+        "action_type": action_type,
+        "result": "success"
+    }
+
+
+# 도구 목록 정의
+ANALYSIS_TOOLS = [
+    query_cloudwatch_metrics,
+    query_rds_logs,
+    search_knowledge_base,
+    execute_remediation_action
+]
+```
+
+### 7.4 Graph Definition
+
+```python
+# src/agent/graph.py
+from typing import Literal
+from langgraph.graph import StateGraph, START, END
+from langgraph.prebuilt import ToolNode
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+
+from .state import AgentState
+from .tools import ANALYSIS_TOOLS
+from .nodes import (
+    analyze_node,
+    reflect_node,
+    should_continue,
+    create_llm_with_tools
+)
+
+
+def create_analysis_graph() -> StateGraph:
+    """BDP 분석 에이전트 그래프를 생성합니다.
+
+    그래프 구조:
+    ┌─────────────────────────────────────────────────┐
+    │                  START                           │
+    │                    │                             │
+    │                    ▼                             │
+    │             ┌──────────────┐                    │
+    │             │   Analyze    │◀──────────┐       │
+    │             │   (Think)    │           │       │
+    │             └──────┬───────┘           │       │
+    │                    │                   │       │
+    │         ┌─────────┼─────────┐         │       │
+    │         ▼         ▼         ▼         │       │
+    │    ┌────────┐ ┌────────┐ ┌────────┐  │       │
+    │    │ Tools  │ │Reflect │ │  END   │  │       │
+    │    │ (Act)  │ │        │ │        │  │       │
+    │    └────┬───┘ └────┬───┘ └────────┘  │       │
+    │         │          │                  │       │
+    │         ▼          ▼                  │       │
+    │    ┌─────────────────────────────────┐│       │
+    │    │      Observe & Continue?        ││       │
+    │    └────────────────────┬────────────┘│       │
+    │                         │             │       │
+    │              ┌──────────┴──────────┐  │       │
+    │              │                      │  │       │
+    │         replan               continue  │       │
+    │              └───────────────────────►┘       │
+    └─────────────────────────────────────────────────┘
+    """
+
+    # LLM 설정 (vLLM 또는 Gemini)
+    llm = create_llm_with_tools(ANALYSIS_TOOLS)
+
+    # 그래프 빌더
+    builder = StateGraph(AgentState)
+
+    # 노드 추가
+    builder.add_node("analyze", analyze_node)
+    builder.add_node("tools", ToolNode(ANALYSIS_TOOLS))
+    builder.add_node("reflect", reflect_node)
+
+    # 엣지 정의
+    builder.add_edge(START, "analyze")
+
+    # 조건부 엣지: 분석 후 다음 단계 결정
+    builder.add_conditional_edges(
+        "analyze",
+        should_continue,
+        {
+            "tools": "tools",      # 도구 호출 필요
+            "reflect": "reflect",   # 분석 완료, 검증 필요
+            "end": END              # 완료
+        }
+    )
+
+    # 도구 실행 후 분석으로 복귀 (Observe)
+    builder.add_edge("tools", "analyze")
+
+    # Reflect 후 조건부 분기
+    builder.add_conditional_edges(
+        "reflect",
+        lambda state: "replan" if state.get("requires_replan") else "end",
+        {
+            "replan": "analyze",  # 재분석 필요
+            "end": END            # 완료
+        }
+    )
+
+    return builder.compile()
+
+
+# 노드 구현
+# src/agent/nodes.py
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+import os
+
+
+def create_llm_with_tools(tools):
+    """환경에 따라 vLLM 또는 Gemini LLM을 생성합니다."""
+    provider = os.environ.get("LLM_PROVIDER", "vllm")
+
+    if provider == "vllm":
+        return ChatOpenAI(
+            base_url=os.environ.get("VLLM_BASE_URL", "http://localhost:8000/v1"),
+            model=os.environ.get("VLLM_MODEL_NAME"),
+            api_key=os.environ.get("VLLM_API_KEY", "EMPTY"),
+            temperature=0.3
+        ).bind_tools(tools)
+    else:
+        return ChatGoogleGenerativeAI(
+            model=os.environ.get("GEMINI_MODEL_ID", "gemini-2.5-pro"),
+            temperature=0.3
+        ).bind_tools(tools)
+
+
+def analyze_node(state: AgentState) -> AgentState:
+    """분석 노드: ReAct의 Think 단계
+
+    현재 상태를 기반으로 분석하고,
+    필요시 도구 호출을 결정합니다.
+    """
+    llm = create_llm_with_tools(ANALYSIS_TOOLS)
+
+    # 시스템 프롬프트 구성
+    system_prompt = """You are an expert DevOps engineer analyzing system anomalies.
+
+Based on the anomalies provided, you should:
+1. Analyze the symptoms and patterns
+2. Query relevant metrics and logs using available tools
+3. Search knowledge base for similar issues
+4. Identify root cause with evidence
+5. Recommend specific remediation actions
+
+Always provide clear reasoning for your conclusions."""
+
+    # 현재 메시지에 시스템 컨텍스트 추가
+    messages = state.get("messages", [])
+    if not messages:
+        # 초기 분석 요청
+        anomaly_summary = _format_anomalies(state.get("anomalies", []))
+        messages = [HumanMessage(content=f"""
+Analyze the following anomalies and determine root cause:
+
+{anomaly_summary}
+
+Use the available tools to gather more information as needed.
+""")]
+
+    # LLM 호출
+    response = llm.invoke(messages)
+
+    return {
+        **state,
+        "messages": messages + [response],
+        "iteration_count": state.get("iteration_count", 0) + 1
+    }
+
+
+def reflect_node(state: AgentState) -> AgentState:
+    """Reflect 노드: 분석 결과 검증
+
+    분석의 신뢰도를 평가하고
+    재분석 필요 여부를 결정합니다.
+    """
+    from src.services.reflection_engine import ReflectionEngine
+
+    engine = ReflectionEngine()
+
+    # 현재 분석 결과 추출
+    analysis = {
+        "root_cause": state.get("root_cause", ""),
+        "evidence": state.get("evidence", []),
+        "actions": state.get("recommended_actions", [])
+    }
+
+    # 증거 컨텍스트
+    evidence_context = {
+        "total_anomalies": len(state.get("anomalies", [])),
+        "tool_calls": state.get("tool_calls_made", [])
+    }
+
+    # 신뢰도 평가
+    result = engine.evaluate(analysis, evidence_context, [])
+
+    # 재분석 조건
+    max_iterations = state.get("max_iterations", 3)
+    current_iteration = state.get("iteration_count", 1)
+
+    requires_replan = (
+        result.requires_replan and
+        current_iteration < max_iterations
+    )
+
+    return {
+        **state,
+        "confidence": result.confidence,
+        "reflection_notes": result.reasoning,
+        "requires_replan": requires_replan
+    }
+
+
+def should_continue(state: AgentState) -> Literal["tools", "reflect", "end"]:
+    """다음 단계 결정
+
+    Returns:
+        - "tools": 도구 호출 필요
+        - "reflect": 분석 완료, 검증 필요
+        - "end": 완료
+    """
+    messages = state.get("messages", [])
+    if not messages:
+        return "end"
+
+    last_message = messages[-1]
+
+    # 도구 호출이 있는 경우
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "tools"
+
+    # 최대 반복 횟수 초과
+    if state.get("iteration_count", 0) >= state.get("max_iterations", 3):
+        return "end"
+
+    # 분석 결과가 있으면 검증
+    if state.get("root_cause"):
+        return "reflect"
+
+    return "end"
+
+
+def _format_anomalies(anomalies: list) -> str:
+    """이상 현상을 프롬프트용 텍스트로 포맷팅"""
+    lines = []
+    for i, anomaly in enumerate(anomalies, 1):
+        lines.append(f"""
+## Anomaly {i}
+- ID: {anomaly.get('anomaly_id', 'unknown')}
+- Service: {anomaly.get('service_name', 'unknown')}
+- Type: {anomaly.get('anomaly_type', 'unknown')}
+- Severity: {anomaly.get('severity', 'unknown')}
+""")
+
+        # 샘플 로그 추가
+        sample_logs = anomaly.get('sample_logs', [])[:3]
+        if sample_logs:
+            lines.append("### Sample Logs:")
+            for log in sample_logs:
+                lines.append(f"- [{log.get('log_level')}] {log.get('message', '')[:200]}")
+
+    return '\n'.join(lines)
+```
+
+### 7.5 Step Functions Integration
+
+LangGraph Agent는 Step Functions에서 호출되는 Lambda 내에서 실행됩니다:
+
+```python
+# src/handlers/analysis_handler_langgraph.py
+import os
+import json
+from typing import Dict, Any
+from pydantic import BaseModel
+
+from ..agent.graph import create_analysis_graph
+from ..agent.state import AgentState
+from .base_handler import lambda_handler_wrapper
+
+
+class LangGraphAnalysisInput(BaseModel):
+    """LangGraph 분석 Lambda 입력"""
+    anomalies: list
+    workflow_id: str
+    max_iterations: int = 3
+
+
+@lambda_handler_wrapper
+def lambda_handler(event: Dict, context: Any, log) -> Dict:
+    """LangGraph Agent 실행 Lambda 핸들러
+
+    Step Functions에서 호출되어 LangGraph 분석 에이전트를 실행합니다.
+    에이전트는 내부적으로 ReAct 루프를 수행하고,
+    최종 분석 결과를 반환합니다.
+    """
+    # 입력 파싱
+    input_data = LangGraphAnalysisInput.model_validate(event)
+
+    # 그래프 생성
+    graph = create_analysis_graph()
+
+    # 초기 상태
+    initial_state: AgentState = {
+        "messages": [],
+        "anomalies": input_data.anomalies,
+        "workflow_id": input_data.workflow_id,
+        "root_cause": None,
+        "evidence": [],
+        "recommended_actions": [],
+        "confidence": 0.0,
+        "reflection_notes": None,
+        "iteration_count": 0,
+        "max_iterations": input_data.max_iterations,
+        "requires_replan": False,
+        "tool_calls_made": []
+    }
+
+    # 그래프 실행
+    log.info("langgraph_execution_start", workflow_id=input_data.workflow_id)
+
+    final_state = graph.invoke(initial_state)
+
+    log.info(
+        "langgraph_execution_complete",
+        iterations=final_state.get("iteration_count"),
+        confidence=final_state.get("confidence")
+    )
+
+    # 결과 반환
+    return {
+        "analysis": {
+            "root_cause": final_state.get("root_cause"),
+            "evidence": final_state.get("evidence"),
+            "recommended_actions": final_state.get("recommended_actions"),
+            "confidence": final_state.get("confidence"),
+            "reasoning": final_state.get("reflection_notes"),
+            "requires_approval": final_state.get("confidence", 0) < 0.85
+        },
+        "workflow_id": input_data.workflow_id,
+        "auto_execute": final_state.get("confidence", 0) >= 0.85,
+        "metadata": {
+            "iterations": final_state.get("iteration_count"),
+            "tool_calls": final_state.get("tool_calls_made")
+        }
+    }
+```
+
+### 7.6 Testing the Agent
+
+```python
+# tests/unit/test_langgraph_agent.py
+import pytest
+from unittest.mock import patch, MagicMock
+
+from src.agent.graph import create_analysis_graph
+from src.agent.state import AgentState
+
+
+class TestLangGraphAgent:
+    """LangGraph 에이전트 테스트"""
+
+    def test_graph_creation(self):
+        """그래프가 올바르게 생성되는지 테스트"""
+        graph = create_analysis_graph()
+        assert graph is not None
+
+    @patch('src.agent.nodes.create_llm_with_tools')
+    def test_analyze_node_calls_llm(self, mock_llm_factory):
+        """분석 노드가 LLM을 호출하는지 테스트"""
+        from src.agent.nodes import analyze_node
+
+        # Mock LLM 설정
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(
+            content="Analysis result",
+            tool_calls=[]
+        )
+        mock_llm_factory.return_value = mock_llm
+
+        # 초기 상태
+        state = {
+            "messages": [],
+            "anomalies": [{"anomaly_id": "test-1", "service_name": "test-service"}],
+            "iteration_count": 0
+        }
+
+        # 노드 실행
+        result = analyze_node(state)
+
+        assert result["iteration_count"] == 1
+        assert len(result["messages"]) > 0
+
+    def test_should_continue_with_tool_calls(self):
+        """도구 호출이 있을 때 'tools' 반환 테스트"""
+        from src.agent.nodes import should_continue
+
+        mock_message = MagicMock()
+        mock_message.tool_calls = [{"name": "query_cloudwatch_metrics"}]
+
+        state = {
+            "messages": [mock_message],
+            "iteration_count": 1
+        }
+
+        result = should_continue(state)
+        assert result == "tools"
+
+    def test_should_continue_with_root_cause(self):
+        """근본 원인이 있을 때 'reflect' 반환 테스트"""
+        from src.agent.nodes import should_continue
+
+        mock_message = MagicMock()
+        mock_message.tool_calls = None
+
+        state = {
+            "messages": [mock_message],
+            "root_cause": "Database connection pool exhausted",
+            "iteration_count": 1
+        }
+
+        result = should_continue(state)
+        assert result == "reflect"
+
+    def test_max_iterations_stops_loop(self):
+        """최대 반복 횟수 도달 시 종료 테스트"""
+        from src.agent.nodes import should_continue
+
+        state = {
+            "messages": [MagicMock()],
+            "iteration_count": 3,
+            "max_iterations": 3
+        }
+
+        result = should_continue(state)
+        assert result == "end"
+
+
+class TestReflectNode:
+    """Reflect 노드 테스트"""
+
+    @patch('src.agent.nodes.ReflectionEngine')
+    def test_reflect_calculates_confidence(self, mock_engine_class):
+        """신뢰도 계산 테스트"""
+        from src.agent.nodes import reflect_node
+
+        # Mock ReflectionEngine
+        mock_engine = MagicMock()
+        mock_engine.evaluate.return_value = MagicMock(
+            confidence=0.85,
+            reasoning="Strong evidence",
+            requires_replan=False
+        )
+        mock_engine_class.return_value = mock_engine
+
+        state = {
+            "root_cause": "Connection pool exhausted",
+            "evidence": ["Log entry 1", "Metric spike"],
+            "recommended_actions": [{"type": "lambda_restart"}],
+            "anomalies": [{"anomaly_id": "test-1"}],
+            "iteration_count": 1,
+            "max_iterations": 3
+        }
+
+        result = reflect_node(state)
+
+        assert result["confidence"] == 0.85
+        assert result["requires_replan"] == False
+
+    @patch('src.agent.nodes.ReflectionEngine')
+    def test_reflect_triggers_replan(self, mock_engine_class):
+        """저신뢰도 시 재분석 트리거 테스트"""
+        from src.agent.nodes import reflect_node
+
+        mock_engine = MagicMock()
+        mock_engine.evaluate.return_value = MagicMock(
+            confidence=0.3,
+            reasoning="Insufficient evidence",
+            requires_replan=True
+        )
+        mock_engine_class.return_value = mock_engine
+
+        state = {
+            "root_cause": "Unknown",
+            "evidence": [],
+            "recommended_actions": [],
+            "anomalies": [{"anomaly_id": "test-1"}],
+            "iteration_count": 1,
+            "max_iterations": 3
+        }
+
+        result = reflect_node(state)
+
+        assert result["confidence"] == 0.3
+        assert result["requires_replan"] == True
+```
+
+### 7.7 Implementation Roadmap
+
+LangGraph Agent 구현은 다음 단계로 진행합니다:
+
+```
+Phase 7a: 기본 그래프 구조 (1주)
+├── AgentState 정의
+├── 기본 노드 구현 (analyze, reflect)
+├── 조건부 엣지 로직
+└── 단위 테스트
+
+Phase 7b: 도구 통합 (1주)
+├── CloudWatch 도구
+├── RDS 로그 도구
+├── Knowledge Base 도구
+└── 복구 조치 도구 (dry-run)
+
+Phase 7c: LLM 연동 (1주)
+├── vLLM Provider 연동
+├── Gemini Provider 연동
+├── 프롬프트 최적화
+└── 토큰 사용량 모니터링
+
+Phase 7d: Step Functions 통합 (1주)
+├── Lambda 핸들러 구현
+├── 상태 전달 로직
+├── 에러 핸들링
+└── E2E 테스트
+```
+
+### 7.8 LangGraph vs Step Functions 역할 분담
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Step Functions (외부 오케스트레이션)           │
+│                                                                  │
+│  ┌──────────┐     ┌─────────────────────┐     ┌──────────────┐ │
+│  │ Detect   │────▶│ Analysis Lambda     │────▶│ Execute      │ │
+│  │ Lambda   │     │ (LangGraph 포함)    │     │ Lambda       │ │
+│  └──────────┘     └─────────┬───────────┘     └──────────────┘ │
+│                             │                                   │
+│                             ▼                                   │
+│                    ┌────────────────────────┐                  │
+│                    │   LangGraph Agent      │                  │
+│                    │   (내부 ReAct 루프)    │                  │
+│                    │                        │                  │
+│                    │  Think ───▶ Act        │                  │
+│                    │    ▲         │         │                  │
+│                    │    │         ▼         │                  │
+│                    │    └─── Observe        │                  │
+│                    │         (도구 결과)    │                  │
+│                    │                        │                  │
+│                    │  Reflect ───▶ Replan?  │                  │
+│                    └────────────────────────┘                  │
+│                                                                 │
+│  Approval ◀─── Confidence 기반 분기 ───▶ Auto Execute         │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+
+역할 분담:
+- Step Functions: 감지 → 분석 → 실행 → 승인 워크플로우
+- LangGraph: 분석 Lambda 내 동적 ReAct 루프 및 도구 호출
+```
