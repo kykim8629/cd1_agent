@@ -5,15 +5,30 @@ Cost Anomaly Detector for BDP Agent.
 1. 비율 기반 (RATIO): 전 기간 대비 X% 이상 증가
 2. 표준편차 기반 (STDDEV): 최근 N일 평균에서 2σ 이상
 3. 추세 분석 (TREND): 연속 N일 이상 증가 패턴
+4. Luminol (LUMINOL): LinkedIn의 시계열 이상 탐지 라이브러리
 
 복합 점수: 가중치 기반 종합 신뢰도 계산
+
+Root Cause Analysis:
+- Luminol Correlator를 사용한 메트릭 간 상관관계 분석
+- CloudWatch 메트릭과의 상관관계로 원인 추적
 """
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import structlog
+
+# Luminol imports (with graceful fallback)
+try:
+    from luminol.anomaly_detector import AnomalyDetector as LuminolDetector
+    from luminol.correlator import Correlator as LuminolCorrelator
+    LUMINOL_AVAILABLE = True
+except ImportError:
+    LUMINOL_AVAILABLE = False
+    LuminolDetector = None
+    LuminolCorrelator = None
 
 logger = structlog.get_logger()
 
@@ -23,6 +38,7 @@ class AnomalyType(str, Enum):
     RATIO = "ratio"           # 급격한 증가/감소
     STDDEV = "stddev"         # 표준편차 기반 이상
     TREND = "trend"           # 지속적 증가 추세
+    LUMINOL = "luminol"       # Luminol 라이브러리 기반 탐지
     COMBINED = "combined"     # 복합 이상
 
 
@@ -48,10 +64,20 @@ class AnomalyThresholds:
     trend_consecutive_days: int = 3     # 연속 3일 이상 증가
     trend_min_increase_rate: float = 0.05  # 일 5% 이상 증가
 
-    # 가중치
-    ratio_weight: float = 0.4
-    stddev_weight: float = 0.35
-    trend_weight: float = 0.25
+    # Luminol 임계값
+    luminol_score_threshold: float = 2.0  # Luminol anomaly score 임계값
+    luminol_algorithm: str = "default_detector"  # bitmap_detector, derivative_detector, exp_avg_detector
+
+    # 가중치 (Luminol 포함 시 재분배)
+    ratio_weight: float = 0.30
+    stddev_weight: float = 0.25
+    trend_weight: float = 0.20
+    luminol_weight: float = 0.25        # Luminol 가중치 추가
+
+    # Luminol 비활성화 시 가중치 (원래 가중치로 복원)
+    ratio_weight_no_luminol: float = 0.40
+    stddev_weight_no_luminol: float = 0.35
+    trend_weight_no_luminol: float = 0.25
 
     # 심각도 임계값
     severity_high_threshold: float = 0.8
@@ -59,6 +85,10 @@ class AnomalyThresholds:
 
     # 최소 데이터 요구 사항
     min_data_points: int = 7            # 최소 7일 데이터
+
+    # Root Cause Correlation
+    correlation_threshold: float = 0.7  # 상관계수 임계값
+    max_correlation_shift: int = 3      # 최대 시간 이동 (일)
 
 
 @dataclass
@@ -68,6 +98,15 @@ class DetectionResult:
     score: float
     anomaly_type: AnomalyType
     details: Dict[str, any] = field(default_factory=dict)
+
+
+@dataclass
+class CorrelationResult:
+    """메트릭 상관관계 결과."""
+    metric_name: str
+    coefficient: float
+    shift: int  # 시간 이동 (양수: 해당 메트릭이 뒤처짐, 음수: 앞섬)
+    is_likely_cause: bool  # shift가 음수면 원인일 가능성
 
 
 @dataclass
@@ -84,20 +123,35 @@ class AnomalyResult:
     detected_methods: List[str]
     analysis: str
     date: str
+    # Luminol 추가 필드
+    anomaly_window: Optional[Tuple[int, int]] = None  # (start, end) timestamp
+    correlated_metrics: List[CorrelationResult] = field(default_factory=list)
 
 
 class CostAnomalyDetector:
     """비용 이상 탐지 엔진."""
 
-    def __init__(self, thresholds: Optional[AnomalyThresholds] = None):
+    def __init__(
+        self,
+        thresholds: Optional[AnomalyThresholds] = None,
+        use_luminol: bool = True
+    ):
         """
         초기화.
 
         Args:
             thresholds: 이상 탐지 임계값 설정
+            use_luminol: Luminol 라이브러리 사용 여부 (기본: True)
         """
         self.thresholds = thresholds or AnomalyThresholds()
+        self.use_luminol = use_luminol and LUMINOL_AVAILABLE
         self.logger = logger.bind(service="cost_anomaly_detector")
+
+        if use_luminol and not LUMINOL_AVAILABLE:
+            self.logger.warning(
+                "luminol_not_available",
+                message="Luminol is not installed. Falling back to basic detection."
+            )
 
     def detect_anomaly(
         self,
@@ -146,11 +200,22 @@ class CostAnomalyDetector:
 
         detection_results = [ratio_result, stddev_result, trend_result]
 
+        # Luminol 탐지 (활성화된 경우)
+        luminol_result = None
+        anomaly_window = None
+        if self.use_luminol:
+            luminol_result, anomaly_window = self._detect_luminol_anomaly(
+                costs_by_date, target_date
+            )
+            if luminol_result:
+                detection_results.append(luminol_result)
+
         # 복합 점수 계산
         combined_score = self._calculate_combined_score(
             ratio_result.score,
             stddev_result.score,
-            trend_result.score
+            trend_result.score,
+            luminol_result.score if luminol_result else 0.0
         )
 
         # 탐지된 방법들
@@ -190,7 +255,8 @@ class CostAnomalyDetector:
             detection_results=detection_results,
             detected_methods=detected_methods,
             analysis=analysis,
-            date=target_date
+            date=target_date,
+            anomaly_window=anomaly_window
         )
 
     def detect_all_services(
@@ -408,18 +474,126 @@ class CostAnomalyDetector:
             }
         )
 
+    def _detect_luminol_anomaly(
+        self,
+        costs_by_date: Dict[str, float],
+        target_date: str
+    ) -> Tuple[Optional[DetectionResult], Optional[Tuple[int, int]]]:
+        """
+        Luminol 라이브러리를 사용한 이상 탐지.
+
+        Args:
+            costs_by_date: 날짜별 비용 딕셔너리
+            target_date: 분석 대상 날짜
+
+        Returns:
+            (DetectionResult, anomaly_window) 튜플
+        """
+        if not LUMINOL_AVAILABLE or LuminolDetector is None:
+            return None, None
+
+        try:
+            # 날짜를 타임스탬프 인덱스로 변환
+            sorted_dates = sorted(costs_by_date.keys())
+            ts_data = {i: costs_by_date[d] for i, d in enumerate(sorted_dates)}
+
+            # Luminol 탐지기 실행
+            detector = LuminolDetector(
+                ts_data,
+                algorithm_name=self.thresholds.luminol_algorithm
+            )
+
+            anomalies = detector.get_anomalies()
+
+            if not anomalies:
+                return DetectionResult(
+                    detected=False,
+                    score=0.0,
+                    anomaly_type=AnomalyType.LUMINOL,
+                    details={"message": "No anomalies detected by Luminol"}
+                ), None
+
+            # target_date에 해당하는 이상 현상 찾기
+            target_idx = sorted_dates.index(target_date) if target_date in sorted_dates else -1
+
+            relevant_anomaly = None
+            for anomaly in anomalies:
+                if anomaly.start_timestamp <= target_idx <= anomaly.end_timestamp:
+                    relevant_anomaly = anomaly
+                    break
+                # 가장 가까운 이상도 고려
+                if relevant_anomaly is None or \
+                   abs(anomaly.exact_timestamp - target_idx) < abs(relevant_anomaly.exact_timestamp - target_idx):
+                    relevant_anomaly = anomaly
+
+            if relevant_anomaly is None:
+                return DetectionResult(
+                    detected=False,
+                    score=0.0,
+                    anomaly_type=AnomalyType.LUMINOL,
+                    details={"total_anomalies": len(anomalies)}
+                ), None
+
+            # 점수 정규화 (Luminol score는 0-10+ 범위)
+            normalized_score = min(1.0, relevant_anomaly.anomaly_score / 10.0)
+
+            # 임계값 확인
+            detected = relevant_anomaly.anomaly_score >= self.thresholds.luminol_score_threshold
+
+            anomaly_window = (
+                int(relevant_anomaly.start_timestamp),
+                int(relevant_anomaly.end_timestamp)
+            )
+
+            # 날짜로 변환
+            start_date = sorted_dates[anomaly_window[0]] if anomaly_window[0] < len(sorted_dates) else "N/A"
+            end_date = sorted_dates[anomaly_window[1]] if anomaly_window[1] < len(sorted_dates) else "N/A"
+
+            return DetectionResult(
+                detected=detected,
+                score=normalized_score if detected else normalized_score * 0.5,
+                anomaly_type=AnomalyType.LUMINOL,
+                details={
+                    "luminol_score": relevant_anomaly.anomaly_score,
+                    "exact_timestamp": relevant_anomaly.exact_timestamp,
+                    "window_start": start_date,
+                    "window_end": end_date,
+                    "total_anomalies": len(anomalies)
+                }
+            ), anomaly_window
+
+        except Exception as e:
+            self.logger.error("luminol_detection_error", error=str(e))
+            return DetectionResult(
+                detected=False,
+                score=0.0,
+                anomaly_type=AnomalyType.LUMINOL,
+                details={"error": str(e)}
+            ), None
+
     def _calculate_combined_score(
         self,
         ratio_score: float,
         stddev_score: float,
-        trend_score: float
+        trend_score: float,
+        luminol_score: float = 0.0
     ) -> float:
         """복합 신뢰도 점수 계산."""
-        score = (
-            ratio_score * self.thresholds.ratio_weight +
-            stddev_score * self.thresholds.stddev_weight +
-            trend_score * self.thresholds.trend_weight
-        )
+        if self.use_luminol and luminol_score > 0:
+            # Luminol 포함 가중치
+            score = (
+                ratio_score * self.thresholds.ratio_weight +
+                stddev_score * self.thresholds.stddev_weight +
+                trend_score * self.thresholds.trend_weight +
+                luminol_score * self.thresholds.luminol_weight
+            )
+        else:
+            # Luminol 없이 기존 가중치
+            score = (
+                ratio_score * self.thresholds.ratio_weight_no_luminol +
+                stddev_score * self.thresholds.stddev_weight_no_luminol +
+                trend_score * self.thresholds.trend_weight_no_luminol
+            )
         return round(min(1.0, max(0.0, score)), 3)
 
     def _determine_severity(self, score: float) -> Severity:
@@ -430,6 +604,108 @@ class CostAnomalyDetector:
             return Severity.MEDIUM
         else:
             return Severity.LOW
+
+    def correlate_with_metrics(
+        self,
+        cost_ts: Dict[str, float],
+        related_metrics: Dict[str, Dict[str, float]]
+    ) -> List[CorrelationResult]:
+        """
+        비용 시계열과 관련 메트릭 간의 상관관계 분석.
+
+        Luminol Correlator를 사용하여 비용 변화의 잠재적 원인을 추적합니다.
+        시간 이동(shift)이 음수인 메트릭은 비용 변화 이전에 발생했으므로
+        원인일 가능성이 높습니다.
+
+        Args:
+            cost_ts: 비용 시계열 {date: cost}
+            related_metrics: 관련 메트릭 {metric_name: {date: value}}
+                예: {"CPUUtilization": {...}, "RequestCount": {...}}
+
+        Returns:
+            상관관계 결과 목록 (상관계수 높은 순 정렬)
+        """
+        if not LUMINOL_AVAILABLE or LuminolCorrelator is None:
+            self.logger.warning(
+                "correlator_unavailable",
+                message="Luminol Correlator not available"
+            )
+            return []
+
+        results = []
+
+        try:
+            # 비용 데이터를 타임스탬프 기반으로 변환
+            sorted_dates = sorted(cost_ts.keys())
+            cost_ts_indexed = {i: cost_ts[d] for i, d in enumerate(sorted_dates)}
+
+            for metric_name, metric_ts in related_metrics.items():
+                try:
+                    # 메트릭 데이터도 동일한 날짜 기준으로 변환
+                    metric_ts_indexed = {}
+                    for i, d in enumerate(sorted_dates):
+                        if d in metric_ts:
+                            metric_ts_indexed[i] = metric_ts[d]
+
+                    if len(metric_ts_indexed) < self.thresholds.min_data_points:
+                        self.logger.debug(
+                            "skipping_metric_insufficient_data",
+                            metric=metric_name,
+                            data_points=len(metric_ts_indexed)
+                        )
+                        continue
+
+                    # Luminol Correlator 실행
+                    correlator = LuminolCorrelator(
+                        cost_ts_indexed,
+                        metric_ts_indexed,
+                        max_shift_seconds=self.thresholds.max_correlation_shift
+                    )
+
+                    correlation = correlator.correlation_result
+                    coefficient = correlation.coefficient
+                    shift = correlation.shift
+
+                    # 유의미한 상관관계만 포함
+                    if abs(coefficient) >= self.thresholds.correlation_threshold:
+                        is_likely_cause = shift < 0  # 음수 shift = 해당 메트릭이 앞섬
+
+                        results.append(CorrelationResult(
+                            metric_name=metric_name,
+                            coefficient=round(coefficient, 3),
+                            shift=shift,
+                            is_likely_cause=is_likely_cause
+                        ))
+
+                        self.logger.debug(
+                            "correlation_found",
+                            metric=metric_name,
+                            coefficient=coefficient,
+                            shift=shift,
+                            is_likely_cause=is_likely_cause
+                        )
+
+                except Exception as e:
+                    self.logger.warning(
+                        "metric_correlation_error",
+                        metric=metric_name,
+                        error=str(e)
+                    )
+                    continue
+
+            # 상관계수 절댓값 기준 정렬, 원인 가능성 있는 것 우선
+            results.sort(key=lambda x: (-x.is_likely_cause, -abs(x.coefficient)))
+
+            self.logger.info(
+                "correlation_analysis_complete",
+                total_metrics=len(related_metrics),
+                correlated_metrics=len(results)
+            )
+
+        except Exception as e:
+            self.logger.error("correlation_analysis_error", error=str(e))
+
+        return results
 
     def _generate_analysis(
         self,
@@ -473,6 +749,14 @@ class CostAnomalyDetector:
                 avg_rate = result.details.get('average_increase_rate', 0) * 100
                 analysis_parts.append(
                     f"Trend alert: {days} consecutive days of ~{avg_rate:.1f}% increase"
+                )
+            elif result.anomaly_type == AnomalyType.LUMINOL:
+                luminol_score = result.details.get('luminol_score', 0)
+                window_start = result.details.get('window_start', 'N/A')
+                window_end = result.details.get('window_end', 'N/A')
+                analysis_parts.append(
+                    f"Luminol alert: anomaly score {luminol_score:.2f} "
+                    f"(window: {window_start} ~ {window_end})"
                 )
 
         # 종합 신뢰도

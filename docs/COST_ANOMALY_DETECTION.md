@@ -23,7 +23,9 @@ BDP Agent의 비용 이상 탐지 모듈은 AWS Cost Explorer API를 통해 다�
 ### 주요 기능
 
 - **Cross-Account 지원**: AssumeRole을 통한 다중 계정 비용 조회
-- **복합 이상 탐지**: 비율/표준편차/추세 분석 기반 탐지
+- **복합 이상 탐지**: 비율/표준편차/추세/Luminol 분석 기반 탐지
+- **Luminol 통합**: LinkedIn의 시계열 이상 탐지 라이브러리 활용
+- **Root Cause 분석**: Luminol Correlator를 통한 메트릭 상관관계 기반 원인 추적
 - **서비스별 분석**: AWS 서비스별 상세 비용 분석
 - **자동 알림**: EventBridge를 통한 심각도별 알림
 - **이력 관리**: DynamoDB 기반 비용 이력 및 이상 현상 추적
@@ -100,10 +102,46 @@ z_score = (current_cost - mean) / stdev
 **탐지 예시**:
 - Day1 $100 → Day2 $108 (+8%) → Day3 $118 (+9%) → Day4 $130 (+10%) → **탐지됨**
 
+### 4. Luminol 기반 탐지 (Luminol)
+
+LinkedIn의 오픈소스 시계열 이상 탐지 라이브러리 [Luminol](https://github.com/linkedin/luminol)을 활용합니다.
+
+```python
+# Luminol 알고리즘 옵션
+- default_detector: 기본 탐지기 (권장)
+- bitmap_detector: 비트맵 기반 패턴 분석
+- derivative_detector: 미분 기반 변화율 분석
+- exp_avg_detector: 지수 이동 평균 기반
+
+# 기본 임계값
+- luminol_score_threshold: 2.0
+- luminol_algorithm: "default_detector"
+```
+
+**장점**:
+- 시계열 데이터에 최적화된 다양한 알고리즘
+- 이상 현상의 시간 윈도우 (시작~종료) 제공
+- 다른 시계열과의 상관관계 분석 (Correlator)
+
+**탐지 예시**:
+- Luminol이 비용 패턴에서 anomaly score 3.5 탐지 (임계값 2.0 초과) → **탐지됨**
+- 이상 윈도우: 2024-01-10 ~ 2024-01-12
+
 ### 복합 점수 계산
 
 각 방법의 점수를 가중 평균으로 결합합니다.
 
+#### Luminol 활성화 시 (기본값)
+```python
+combined_score = (
+    ratio_score * 0.30 +    # 30% 가중치
+    stddev_score * 0.25 +   # 25% 가중치
+    trend_score * 0.20 +    # 20% 가중치
+    luminol_score * 0.25    # 25% 가중치
+)
+```
+
+#### Luminol 비활성화 시
 ```python
 combined_score = (
     ratio_score * 0.40 +    # 40% 가중치
@@ -123,6 +161,90 @@ combined_score = (
 | HIGH | score ≥ 0.8 | Slack + Email 알림 |
 | MEDIUM | 0.5 ≤ score < 0.8 | Slack 알림 |
 | LOW | score < 0.5 | 로그 기록 |
+
+---
+
+## Root Cause 상관관계 분석
+
+Luminol Correlator를 사용하여 비용 이상 현상의 잠재적 원인을 추적합니다.
+
+### 작동 원리
+
+```
+비용 시계열 ────┐
+               │
+CloudWatch     │     Luminol          상관관계 결과
+메트릭들  ─────┼────▶ Correlator ────▶ (coefficient, shift)
+               │
+(CPU, Request, │
+ Memory 등)  ──┘
+```
+
+### 상관관계 분석 파라미터
+
+| 파라미터 | 설명 | 기본값 |
+|----------|------|--------|
+| `correlation_threshold` | 유의미한 상관계수 임계값 | 0.7 |
+| `max_correlation_shift` | 최대 시간 이동 (일) | 3 |
+
+### Shift 해석
+
+- **shift < 0**: 해당 메트릭이 비용 변화보다 **먼저** 발생 → **원인 가능성 높음**
+- **shift = 0**: 동시 발생 → 상관관계 있음
+- **shift > 0**: 해당 메트릭이 비용 변화보다 **나중에** 발생 → 결과일 가능성
+
+### 사용 예시
+
+```python
+from examples.services.cost_anomaly_detector import CostAnomalyDetector
+
+detector = CostAnomalyDetector(use_luminol=True)
+
+# 비용 데이터
+cost_ts = {
+    "2024-01-08": 100.0,
+    "2024-01-09": 105.0,
+    "2024-01-10": 180.0,  # 급증
+    "2024-01-11": 175.0,
+    "2024-01-12": 160.0,
+}
+
+# 관련 CloudWatch 메트릭
+related_metrics = {
+    "CPUUtilization": {
+        "2024-01-08": 45.0,
+        "2024-01-09": 85.0,  # CPU 먼저 증가
+        "2024-01-10": 90.0,
+        "2024-01-11": 88.0,
+        "2024-01-12": 75.0,
+    },
+    "RequestCount": {
+        "2024-01-08": 1000,
+        "2024-01-09": 2500,  # 요청 먼저 증가
+        "2024-01-10": 3000,
+        "2024-01-11": 2800,
+        "2024-01-12": 2200,
+    }
+}
+
+# 상관관계 분석
+correlations = detector.correlate_with_metrics(cost_ts, related_metrics)
+
+for corr in correlations:
+    print(f"{corr.metric_name}: coefficient={corr.coefficient:.3f}, "
+          f"shift={corr.shift}, is_likely_cause={corr.is_likely_cause}")
+
+# 출력 예시:
+# RequestCount: coefficient=0.92, shift=-1, is_likely_cause=True
+# CPUUtilization: coefficient=0.85, shift=-1, is_likely_cause=True
+```
+
+### Root Cause 분석 워크플로우
+
+1. **이상 탐지**: CostAnomalyDetector로 비용 이상 현상 감지
+2. **메트릭 수집**: CloudWatch에서 관련 메트릭 조회 (CPU, Memory, Request 등)
+3. **상관관계 분석**: `correlate_with_metrics()`로 원인 후보 식별
+4. **결과 해석**: `is_likely_cause=True`인 메트릭을 우선 조사
 
 ---
 
@@ -457,4 +579,5 @@ print(json.dumps(json.loads(result['body']), indent=2))
 
 - [AWS Cost Explorer API](https://docs.aws.amazon.com/cost-management/latest/APIReference/API_Operations_AWS_Cost_Explorer_Service.html)
 - [Cross-Account Access](https://docs.aws.amazon.com/IAM/latest/UserGuide/tutorial_cross-account-with-roles.html)
+- [Luminol - LinkedIn Time Series Anomaly Detection](https://github.com/linkedin/luminol)
 - [BDP Agent 아키텍처](./ARCHITECTURE.md)
