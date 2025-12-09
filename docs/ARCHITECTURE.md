@@ -97,7 +97,7 @@ BDP Agent는 Provider Abstraction 패턴을 사용하여 LLM과 AWS 서비스를
                              │
                              ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                           Remediation Actions                                 │
+│                           복구 조치 (Actions)                                 │
 │                                                                               │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
 │  │   Lambda     │  │     RDS      │  │ Auto Scaling │  │  EventBridge │     │
@@ -225,9 +225,9 @@ GEMINI_MODEL_ID = "gemini-2.5-pro"  # 또는 "gemini-2.5-flash"
 }
 ```
 
-### 3. Remediation Layer
+### 3. 복구 조치 레이어 (Action Layer)
 
-#### Lambda: bdp-remediation
+#### Lambda: bdp-action
 | 속성 | 값 |
 |------|-----|
 | Runtime | Python 3.12 |
@@ -266,10 +266,10 @@ SK: timestamp (String)
 Attributes:
   - phase (String)
   - analysis_result (Map)
-  - remediation_status (String)
+  - action_status (String)
 ```
 
-**bdp-remediation-history**
+**bdp-action-history**
 ```
 PK: resource_id (String)
 SK: execution_time (String)
@@ -435,7 +435,7 @@ class AgentState(TypedDict):
     log_summary: str             # 계층적 요약된 로그
     analysis_result: dict        # 분석 결과
     confidence_score: float      # 신뢰도 점수
-    remediation_plan: dict       # 복구 계획
+    action_plan: dict            # 복구 조치 계획
     iteration_count: int         # 현재 반복 횟수
     max_iterations: int          # 최대 반복 횟수
 ```
@@ -471,7 +471,7 @@ def evaluate_confidence(analysis: dict, evidence: list) -> float:
     pass
 
 @tool
-def propose_remediation(root_cause: str, context: dict) -> dict:
+def propose_action(root_cause: str, context: dict) -> dict:
     """복구 조치를 제안합니다."""
     pass
 ```
@@ -652,7 +652,7 @@ Step Functions: AnalyzeRootCause
 ┌─────────────────────────────────────────────┐
 │ 2. Load Knowledge Base                      │
 │    - Detect relevant library/error patterns │
-│    - Load remediation playbooks             │
+│    - Load action playbooks                  │
 └─────────────────┬───────────────────────────┘
                   │
                   ▼
@@ -665,7 +665,7 @@ Step Functions: AnalyzeRootCause
                   │
                   ▼
 ┌─────────────────────────────────────────────┐
-│ 4. Invoke Bedrock Claude                    │
+│ 4. Invoke LLM (vLLM/Gemini)                 │
 │    - Send formatted prompt                  │
 │    - Parse JSON response                    │
 └─────────────────┬───────────────────────────┘
@@ -683,7 +683,7 @@ Step Functions: AnalyzeRootCause
          Return Analysis Result
 ```
 
-### 3. Remediation Decision Flow
+### 3. 복구 조치 결정 흐름 (Action Decision Flow)
 
 모든 복구 조치는 **승인 후 실행** 방식으로 동작합니다.
 
@@ -713,7 +713,7 @@ Step Functions: AnalyzeRootCause
      ▼    │    ▼       │
 ┌─────────┐│ ┌─────────┐
 │ Execute ││ │ Rejected│
-│Remediation│ └─────────┘
+│ Action  │ └─────────┘
 └─────┬─────┘      │
       │            │
       ▼            │
@@ -749,7 +749,7 @@ Step Functions: AnalyzeRootCause
 | bdp-detection | 512MB | 60s | ARM64 | MWAA (Airflow DAG) |
 | bdp-drift-detection | 512MB | 120s | ARM64 | MWAA (Airflow DAG) |
 | bdp-analysis | 1024MB | 120s | ARM64 | Step Functions |
-| bdp-remediation | 512MB | 60s | ARM64 | Step Functions |
+| bdp-action | 512MB | 60s | ARM64 | Step Functions |
 | bdp-approval | 256MB | 30s | ARM64 | API Gateway |
 
 ### DynamoDB Tables
@@ -758,7 +758,7 @@ Step Functions: AnalyzeRootCause
 |-------|---------|-----|---------|
 | bdp-anomaly-tracking | On-Demand | 7 days | Deduplication |
 | bdp-workflow-state | On-Demand | 30 days | Workflow state |
-| bdp-remediation-history | On-Demand | 90 days | Audit trail |
+| bdp-action-history | On-Demand | 90 days | Audit trail |
 | bdp-config-drift-tracking | On-Demand | 90 days | Config drift history |
 
 ### MWAA (Amazon Managed Workflows for Apache Airflow)
@@ -772,7 +772,7 @@ Step Functions: AnalyzeRootCause
 
 | State Machine | Purpose |
 |---------------|---------|
-| bdp-main-workflow | Main detection → analysis → remediation flow |
+| bdp-main-workflow | Main detection → analysis → action flow |
 | bdp-approval-workflow | Human approval sub-workflow |
 
 ### IAM Roles
@@ -781,7 +781,7 @@ Step Functions: AnalyzeRootCause
 |------|-------------|
 | bdp-detection-role | CloudWatch Logs, RDS Data API, DynamoDB |
 | bdp-analysis-role | VPC (vLLM 접근), Secrets Manager (API Keys), S3 (knowledge base), DynamoDB |
-| bdp-remediation-role | Lambda, RDS, Auto Scaling, EventBridge |
+| bdp-action-role | Lambda, RDS, Auto Scaling, EventBridge |
 
 > **Note**: vLLM 사용 시 Lambda가 On-Prem 서버에 접근하려면 VPC 설정 및 적절한 네트워크 구성이 필요합니다.
 
@@ -801,7 +801,7 @@ Step Functions: AnalyzeRootCause
 
 ### Audit & Compliance
 - CloudTrail로 API 호출 로깅
-- remediation-history 테이블로 변경 추적
+- action-history 테이블로 변경 추적
 - Step Functions 실행 로그 보존
 
 ---

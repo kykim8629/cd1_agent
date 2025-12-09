@@ -193,15 +193,15 @@ python -m examples.services.llm_client  # LLM Mock 테스트
 |-------|---------|-----|
 | `bdp-anomaly-tracking` | 중복 제거 (TTL 7일) | `signature` |
 | `bdp-workflow-state` | 워크플로우 상태 | `workflow_id`, `timestamp` |
-| `bdp-remediation-history` | 감사 로그 | `remediation_id` |
+| `bdp-action-history` | 복구 조치 감사 로그 | `action_id` |
 
 ## Lambda Functions
 
 | Function | Memory | Timeout | Description |
 |----------|--------|---------|-------------|
 | `bdp-detection` | 512MB | 60s | 로그 이상 감지 |
-| `bdp-analysis` | 1024MB | 120s | Bedrock 근본 원인 분석 |
-| `bdp-remediation` | 512MB | 60s | 복구 조치 실행 |
+| `bdp-analysis` | 1024MB | 120s | LLM 기반 근본 원인 분석 |
+| `bdp-action` | 512MB | 60s | 복구 조치 실행 |
 | `bdp-approval` | 256MB | 30s | 승인 요청 처리 |
 | `bdp-notification` | 256MB | 30s | EventBridge 알림 |
 
@@ -242,7 +242,7 @@ python -m examples.services.llm_client  # LLM Mock 테스트
 
 > **Note**: 자동 실행(Auto Execute) 기능은 현재 비활성화되어 있습니다. 모든 조치는 담당자 승인 후 실행됩니다.
 
-## Supported Remediation Actions
+## 지원 복구 조치 (Supported Actions)
 
 - `lambda_restart`: Lambda 함수 재시작
 - `rds_parameter`: RDS 파라미터 변경

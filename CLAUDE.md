@@ -19,5 +19,5 @@ BDP Agent는 AWS 환경에서 이상 탐지 및 자동 대응을 수행하는 La
 ## Architecture
 - **Trigger**: MWAA (Airflow DAG)
 - **Event Publishing**: EventBridge (알림용)
-- **LLM Provider**: vLLM / Gemini (Bedrock 사용 안 함)
+- **LLM Provider**: vLLM / Gemini
 - **Orchestration**: Step Functions

@@ -47,17 +47,29 @@
   - docs/COST_OPTIMIZATION.md: CDK 예시를 CloudFormation으로 변경
   - docs/IMPLEMENTATION_GUIDE.md: CDK Stack을 MWAA DAG + CloudFormation으로 변경
 
-### 5. Replace remediation terms
-- **상태**: 대기
-- **설명**: remediation 영문 표현을 한글로 전환
-- **우선순위**: Low
-- **관련 파일**: `docs/`, `src/`
+### ~~5. Replace remediation terms~~
+- **상태**: 완료
+- **완료일**: 2024-12-09
+- **설명**: remediation 영문 표현을 한글로 전환 (문서에서 "복구 조치"로 변경)
+- **변경 사항**:
+  - README.md: `bdp-remediation` → `bdp-action`, `bdp-remediation-history` → `bdp-action-history`
+  - README.md: "Supported Remediation Actions" → "지원 복구 조치 (Supported Actions)"
+  - docs/ARCHITECTURE.md: Remediation Layer → 복구 조치 레이어
+  - docs/ARCHITECTURE.md: Remediation Decision Flow → 복구 조치 결정 흐름
+  - docs/ARCHITECTURE.md: Lambda/테이블/역할명 변경
+  - docs/COST_OPTIMIZATION.md: bdp-remediation → bdp-action
+  - 코드 내 변수명/함수명은 영문 유지 (호환성)
 
-### 6. Remove Bedrock references
-- **상태**: 대기
+### ~~6. Remove Bedrock references~~
+- **상태**: 완료
+- **완료일**: 2024-12-09
 - **설명**: 잔존 Bedrock 표현/기능 완전 제거
-- **우선순위**: High
-- **관련 파일**: `docs/`, `src/`, `README.md`
+- **변경 사항**:
+  - src/services/aws_client.py: "Bedrock Knowledge Base" → "Knowledge Base"
+  - README.md: "Bedrock 근본 원인 분석" → "LLM 기반 근본 원인 분석"
+  - docs/ARCHITECTURE.md: "Invoke Bedrock Claude" → "Invoke LLM (vLLM/Gemini)"
+  - docs/COST_OPTIMIZATION.md: Bedrock API → LLM API
+  - CLAUDE.md: Bedrock 언급 제거
 
 ---
 

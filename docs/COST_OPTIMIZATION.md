@@ -370,15 +370,15 @@ ARM64:
 
 ### 3.2 Memory 최적화
 
-Lambda 메모리는 CPU에 비례합니다. Bedrock API 호출은 I/O 바운드이므로 높은 메모리가 필요 없습니다.
+Lambda 메모리는 CPU에 비례합니다. LLM API 호출은 I/O 바운드이므로 높은 메모리가 필요 없습니다.
 
 ```python
 # 함수별 권장 메모리
 
 MEMORY_RECOMMENDATIONS = {
     'bdp-detection': 512,    # 로그 쿼리 (I/O 바운드)
-    'bdp-analysis': 1024,    # Bedrock 호출 + 로그 처리
-    'bdp-remediation': 512,  # AWS API 호출 (I/O 바운드)
+    'bdp-analysis': 1024,    # LLM 호출 + 로그 처리
+    'bdp-action': 512,       # AWS API 호출 (I/O 바운드)
     'bdp-approval': 256,     # 간단한 API 핸들러
     'bdp-warmup': 128,       # Ping 전용
 }

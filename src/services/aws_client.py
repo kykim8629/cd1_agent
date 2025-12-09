@@ -100,7 +100,7 @@ class BaseAWSProvider(ABC):
         query: str,
         max_results: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Retrieve from Bedrock Knowledge Base."""
+        """Retrieve from Knowledge Base."""
         pass
 
 
@@ -286,7 +286,7 @@ class RealAWSProvider(BaseAWSProvider):
         query: str,
         max_results: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Retrieve from Bedrock Knowledge Base."""
+        """Retrieve from Knowledge Base."""
         client = self._get_client("bedrock-agent-runtime")
         response = client.retrieve(
             knowledgeBaseId=knowledge_base_id,
@@ -617,7 +617,7 @@ class AWSClient:
         query: str,
         max_results: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Retrieve from Bedrock Knowledge Base."""
+        """Retrieve from Knowledge Base."""
         return self._provider.retrieve_knowledge_base(knowledge_base_id, query, max_results)
 
     @property
