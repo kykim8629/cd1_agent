@@ -1,6 +1,8 @@
-# AWS Cost Anomaly Detection
+# Cost Agent - AWS Cost Anomaly Detection
 
-AWS Cost Explorer를 활용한 다중 계정 비용 이상 탐지 시스템.
+> **서브 에이전트**: Cost Agent (비용 Anomaly 탐지 Agent)
+>
+> AWS Cost Explorer를 활용한 다중 계정 비용 이상 탐지 시스템.
 
 ## 목차
 
@@ -575,9 +577,14 @@ print(json.dumps(json.loads(result['body']), indent=2))
 
 ---
 
+## 관련 문서
+
+- [Architecture Guide](ARCHITECTURE.md) - 전체 시스템 아키텍처
+- [HDSP Detection](HDSP_DETECTION.md) - On-Prem K8s 장애 감지 (HDSP Agent)
+- [Config Drift Detection](CONFIG_DRIFT_DETECTION.md) - 설정 드리프트 감지 (Drift Agent)
+
 ## 참고
 
 - [AWS Cost Explorer API](https://docs.aws.amazon.com/cost-management/latest/APIReference/API_Operations_AWS_Cost_Explorer_Service.html)
 - [Cross-Account Access](https://docs.aws.amazon.com/IAM/latest/UserGuide/tutorial_cross-account-with-roles.html)
 - [Luminol - LinkedIn Time Series Anomaly Detection](https://github.com/linkedin/luminol)
-- [BDP Agent 아키텍처](./ARCHITECTURE.md)

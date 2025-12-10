@@ -1,6 +1,8 @@
-# AWS Configuration Drift Detection
+# Drift Agent - AWS Configuration Drift Detection
 
-GitLab 기준선 대비 AWS 리소스 구성 드리프트 탐지 시스템.
+> **서브 에이전트**: Drift Agent (변경관리 Agent)
+>
+> GitLab 기준선 대비 AWS 리소스 구성 드리프트 탐지 시스템.
 
 ## 목차
 
@@ -925,6 +927,12 @@ print(json.dumps(json.loads(result['body']), indent=2))
 
 ---
 
+## 관련 문서
+
+- [Architecture Guide](ARCHITECTURE.md) - 전체 시스템 아키텍처
+- [HDSP Detection](HDSP_DETECTION.md) - On-Prem K8s 장애 감지 (HDSP Agent)
+- [Cost Anomaly Detection](COST_ANOMALY_DETECTION.md) - 비용 이상 탐지 (Cost Agent)
+
 ## 참고
 
 - [AWS EKS API Reference](https://docs.aws.amazon.com/eks/latest/APIReference/)
@@ -933,4 +941,3 @@ print(json.dumps(json.loads(result['body']), indent=2))
 - [AWS EMR API Reference](https://docs.aws.amazon.com/emr/latest/APIReference/)
 - [AWS MWAA API Reference](https://docs.aws.amazon.com/mwaa/latest/API/)
 - [GitLab Repository Files API](https://docs.gitlab.com/ee/api/repository_files.html)
-- [BDP Agent 아키텍처](./ARCHITECTURE.md)

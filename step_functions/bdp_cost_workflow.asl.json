@@ -1,0 +1,401 @@
+{
+  "Comment": "Cost Agent Workflow - AWS Cost Anomaly Detection, Analysis, Remediation",
+  "StartAt": "DetectCostAnomalies",
+  "States": {
+    "DetectCostAnomalies": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:bdp-cost-detection",
+      "Parameters": {
+        "detection_type": "all",
+        "days": 14,
+        "min_cost_threshold": 1.0
+      },
+      "ResultPath": "$.detection",
+      "Next": "CheckAnomaliesDetected",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleError"
+        }
+      ]
+    },
+
+    "CheckAnomaliesDetected": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.detection.anomalies_detected",
+          "BooleanEquals": true,
+          "Next": "ClassifyAnomalySeverity"
+        }
+      ],
+      "Default": "NoAnomaliesFound"
+    },
+
+    "NoAnomaliesFound": {
+      "Type": "Succeed",
+      "Comment": "No cost anomalies detected, workflow complete"
+    },
+
+    "ClassifyAnomalySeverity": {
+      "Type": "Choice",
+      "Comment": "Route based on severity - critical/high goes to immediate analysis",
+      "Choices": [
+        {
+          "Variable": "$.detection.severity_breakdown.critical",
+          "NumericGreaterThan": 0,
+          "Next": "AnalyzeRootCause"
+        },
+        {
+          "Variable": "$.detection.severity_breakdown.high",
+          "NumericGreaterThan": 0,
+          "Next": "AnalyzeRootCause"
+        }
+      ],
+      "Default": "LogMediumLowAnomalies"
+    },
+
+    "LogMediumLowAnomalies": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.cost",
+            "DetailType": "COST_ANOMALY_LOGGED",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "severity": "medium_or_low",
+              "summary.$": "$.detection.summary",
+              "anomalies.$": "$.detection.anomalies"
+            }
+          }
+        ]
+      },
+      "Next": "WorkflowLoggedOnly"
+    },
+
+    "WorkflowLoggedOnly": {
+      "Type": "Succeed",
+      "Comment": "Medium/Low severity anomalies logged for daily report"
+    },
+
+    "AnalyzeRootCause": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:bdp-analysis",
+      "Parameters": {
+        "anomaly_data": {
+          "signature.$": "States.Format('cost_{}', $$.Execution.Name)",
+          "anomaly_type": "cost_anomaly",
+          "service_name": "cost-agent",
+          "agent": "cost",
+          "summary.$": "$.detection.summary",
+          "anomaly_details.$": "$.detection.anomalies",
+          "severity_breakdown.$": "$.detection.severity_breakdown"
+        },
+        "workflow_id.$": "$$.Execution.Id",
+        "previous_attempts.$": "$.previous_attempts"
+      },
+      "ResultPath": "$.analysis",
+      "Next": "EvaluateConfidence",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleError"
+        }
+      ]
+    },
+
+    "EvaluateConfidence": {
+      "Type": "Choice",
+      "Comment": "Cost remediation typically requires approval - budget/resource changes",
+      "Choices": [
+        {
+          "Variable": "$.analysis.analysis.confidence",
+          "NumericGreaterThanEquals": 0.5,
+          "Next": "RequestApproval"
+        }
+      ],
+      "Default": "EscalateToHuman"
+    },
+
+    "RequestApproval": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "bdp-approval",
+        "Payload": {
+          "agent": "cost",
+          "analysis.$": "$.analysis",
+          "detection.$": "$.detection",
+          "taskToken.$": "$$.Task.Token"
+        }
+      },
+      "ResultPath": "$.approval",
+      "TimeoutSeconds": 3600,
+      "Next": "CheckApprovalResult",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.Timeout"],
+          "ResultPath": "$.error",
+          "Next": "ApprovalTimeout"
+        }
+      ]
+    },
+
+    "CheckApprovalResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.approval.approved",
+          "BooleanEquals": true,
+          "Next": "ExecuteApprovedRemediation"
+        }
+      ],
+      "Default": "ApprovalRejected"
+    },
+
+    "ExecuteApprovedRemediation": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:bdp-action",
+      "Parameters": {
+        "agent": "cost",
+        "actions.$": "$.analysis.analysis.recommended_actions",
+        "workflow_id.$": "$$.Execution.Id",
+        "approved_by.$": "$.approval.approved_by"
+      },
+      "ResultPath": "$.remediation",
+      "Next": "ReflectOnResult",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleRemediationError"
+        }
+      ]
+    },
+
+    "ReflectOnResult": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:bdp-analysis",
+      "Parameters": {
+        "mode": "reflection",
+        "agent": "cost",
+        "remediation_result.$": "$.remediation",
+        "original_analysis.$": "$.analysis"
+      },
+      "ResultPath": "$.reflection",
+      "Next": "CheckReflectionResult"
+    },
+
+    "CheckReflectionResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.reflection.success",
+          "BooleanEquals": true,
+          "Next": "WorkflowSuccess"
+        },
+        {
+          "Variable": "$.reflection.requires_replan",
+          "BooleanEquals": true,
+          "Next": "CheckReplanAttempts"
+        }
+      ],
+      "Default": "WorkflowSuccess"
+    },
+
+    "CheckReplanAttempts": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.replan_count",
+          "NumericLessThan": 3,
+          "Next": "IncrementReplanCount"
+        }
+      ],
+      "Default": "MaxReplansReached"
+    },
+
+    "IncrementReplanCount": {
+      "Type": "Pass",
+      "Parameters": {
+        "detection.$": "$.detection",
+        "replan_count.$": "States.MathAdd($.replan_count, 1)",
+        "previous_attempts.$": "States.Array($.analysis)"
+      },
+      "ResultPath": "$",
+      "Next": "AnalyzeRootCause"
+    },
+
+    "MaxReplansReached": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.cost",
+            "DetailType": "COST_MAX_REPLANS_REACHED",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "reason": "Maximum replan attempts reached for cost anomaly",
+              "context.$": "$"
+            }
+          }
+        ]
+      },
+      "Next": "EscalateToHuman"
+    },
+
+    "EscalateToHuman": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.cost",
+            "DetailType": "COST_ESCALATION_REQUIRED",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "cost",
+              "reason": "Low confidence analysis requires human review",
+              "analysis.$": "$.analysis"
+            }
+          }
+        ]
+      },
+      "Next": "WorkflowEscalated"
+    },
+
+    "WorkflowSuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.cost",
+            "DetailType": "COST_REMEDIATION_SUCCESS",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "cost",
+              "summary.$": "$.reflection"
+            }
+          }
+        ]
+      },
+      "Next": "Success"
+    },
+
+    "Success": {
+      "Type": "Succeed"
+    },
+
+    "WorkflowEscalated": {
+      "Type": "Succeed",
+      "Comment": "Workflow escalated to human review"
+    },
+
+    "ApprovalRejected": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.cost",
+            "DetailType": "COST_APPROVAL_REJECTED",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "cost"
+            }
+          }
+        ]
+      },
+      "Next": "ApprovalRejectedEnd"
+    },
+
+    "ApprovalRejectedEnd": {
+      "Type": "Succeed",
+      "Comment": "Cost remediation rejected by approver"
+    },
+
+    "ApprovalTimeout": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.cost",
+            "DetailType": "COST_APPROVAL_TIMEOUT",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "cost"
+            }
+          }
+        ]
+      },
+      "Next": "WorkflowEscalated"
+    },
+
+    "HandleError": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.cost",
+            "DetailType": "COST_WORKFLOW_ERROR",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "cost",
+              "error.$": "$.error"
+            }
+          }
+        ]
+      },
+      "Next": "WorkflowFailed"
+    },
+
+    "HandleRemediationError": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.cost",
+            "DetailType": "COST_REMEDIATION_ERROR",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "cost",
+              "error.$": "$.error"
+            }
+          }
+        ]
+      },
+      "Next": "CheckReplanAttempts"
+    },
+
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Error": "CostWorkflowError",
+      "Cause": "Cost workflow failed due to unrecoverable error"
+    }
+  }
+}

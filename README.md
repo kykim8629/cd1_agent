@@ -1,10 +1,19 @@
 # BDP Agent
 
-AWS Lambda 기반 서버리스 로그 분석 및 자동 복구 에이전트
+AWS Lambda 기반 서버리스 멀티 에이전트 이상 탐지 및 자동 복구 플랫폼
 
 ## Overview
 
-BDP Agent는 AWS 인프라의 로그를 주기적으로 분석하여 이상을 감지하고, LLM을 활용해 근본 원인을 분석한 후, 신뢰도 기반으로 자동 또는 수동 복구를 수행하는 지능형 에이전트입니다.
+BDP Agent는 **4개의 독립적인 서브 에이전트**로 구성된 이상 탐지 플랫폼입니다. 각 에이전트는 MWAA(Airflow)에서 5분 주기로 호출되며, 독립적인 Step Functions 워크플로우를 통해 탐지 → 분석 → 복구 조치를 수행합니다.
+
+### 서브 에이전트 구성
+
+| Agent | 대상 | 탐지 방식 | 설명 |
+|-------|------|----------|------|
+| **BDP Agent** | AWS 인프라 | CloudWatch Logs/Metrics | 로그 패턴, 메트릭 이상, 에러 스파이크 감지 |
+| **HDSP Agent** | On-Prem K8s | Prometheus 메트릭 | Pod/Node 상태, CPU/Memory 이상, OOMKill 감지 |
+| **Cost Agent** | AWS 비용 | Cost Explorer + Luminol | 비용 이상, 서비스별 급증, 근본 원인 분석 |
+| **Drift Agent** | AWS 설정 | Git Baseline 비교 | 구성 드리프트, 보안 설정 변경 감지 |
 
 ### Provider 구성
 
@@ -36,42 +45,43 @@ BDP Agent는 AWS 인프라의 로그를 주기적으로 분석하여 이상을 �
 
 ## Architecture
 
-### Hybrid Orchestration (Step Functions + LangGraph)
+### Multi-Agent Orchestration
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                            MWAA (Airflow DAG)                             │
-└─────────────────────────────────┬────────────────────────────────────────┘
-                                  │
-                                  ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                    Step Functions (Outer Orchestration)                   │
-│                                                                           │
-│  ┌──────────┐      ┌────────────────────────────────┐      ┌───────────┐ │
-│  │ Detect   │─────▶│     LangGraph Agent            │─────▶│ Execute   │ │
-│  │ Anomaly  │      │     (Analysis Lambda)          │      │ Actions   │ │
-│  └──────────┘      │  ┌──────────────────────────┐  │      └───────────┘ │
-│       │            │  │      ReAct Loop          │  │           │        │
-│       │            │  │  Think → Act → Observe   │  │           ▼        │
-│       │            │  │    ▲              │      │  │     ┌───────────┐  │
-│       │            │  │    └── Reflect ◀──┘      │  │     │ Reflect   │  │
-│       │            │  └──────────────────────────┘  │     │ & Replan  │  │
-│       │            │                                │     └─────┬─────┘  │
-│       │            │  Tools: CloudWatch, RDS,       │           │        │
-│       │            │         KnowledgeBase          │     ◀─────┘        │
-│       │            └────────────────────────────────┘                    │
-└───────┼──────────────────────────────────────────────────────────────────┘
-        │
-        ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│  CloudWatch  │  │  vLLM/Gemini │  │  EventBridge │
-│  + RDS Logs  │  │    (LLM)     │  │    (알림)    │
-└──────────────┘  └──────────────┘  └──────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         MWAA (Airflow DAGs) - 5분 주기                    │
+└────────┬────────────────┬────────────────┬────────────────┬─────────────┘
+         │                │                │                │
+         ▼                ▼                ▼                ▼
+┌────────────────┐ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐
+│ BDP Agent      │ │ HDSP Agent     │ │ Cost Agent     │ │ Drift Agent    │
+│ (AWS 로그)     │ │ (Prometheus)   │ │ (Cost Explorer)│ │ (Git Baseline) │
+├────────────────┤ ├────────────────┤ ├────────────────┤ ├────────────────┤
+│ Detection      │ │ Detection      │ │ Detection      │ │ Detection      │
+│      ↓         │ │      ↓         │ │      ↓         │ │      ↓         │
+│ Step Functions │ │ Step Functions │ │ Step Functions │ │ Step Functions │
+│ (개별 WF)      │ │ (개별 WF)      │ │ (개별 WF)      │ │ (개별 WF)      │
+│      ↓         │ │      ↓         │ │      ↓         │ │      ↓         │
+│ Analysis       │ │ Analysis       │ │ Analysis       │ │ Analysis       │
+│      ↓         │ │      ↓         │ │      ↓         │ │      ↓         │
+│ Action         │ │ Action         │ │ Action         │ │ Action         │
+└────────────────┘ └────────────────┘ └────────────────┘ └────────────────┘
+         │                │                │                │
+         └────────────────┴────────────────┴────────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────┐
+                    │ 공통 컴포넌트            │
+                    │ - Analysis Agent (LLM)   │
+                    │ - Action Engine          │
+                    │ - EventBridge 알림       │
+                    └──────────────────────────┘
 ```
 
 **핵심 설계 원칙**:
-- **Step Functions**: 외부 워크플로우 오케스트레이션 (감지 → 분석 → 실행 → 승인)
-- **LangGraph Agent**: 내부 동적 분석 (ReAct 루프, 도구 호출, 신뢰도 평가)
+- **독립적 워크플로우**: 각 에이전트는 개별 Step Functions 워크플로우 실행
+- **공통 분석 엔진**: LangGraph 기반 ReAct 루프를 모든 에이전트가 공유
+- **유연한 스케줄링**: MWAA DAG별 독립적인 실행 주기 설정 가능
 
 ### 워크플로우 상세
 
@@ -197,13 +207,31 @@ python -m examples.services.llm_client  # LLM Mock 테스트
 
 ## Lambda Functions
 
-| Function | Memory | Timeout | Description |
-|----------|--------|---------|-------------|
-| `bdp-detection` | 512MB | 60s | 로그 이상 감지 |
-| `bdp-analysis` | 1024MB | 120s | LLM 기반 근본 원인 분석 |
-| `bdp-action` | 512MB | 60s | 복구 조치 실행 |
-| `bdp-approval` | 256MB | 30s | 승인 요청 처리 |
-| `bdp-notification` | 256MB | 30s | EventBridge 알림 |
+### Detection Lambda (에이전트별)
+
+| Function | Memory | Timeout | Trigger | Description |
+|----------|--------|---------|---------|-------------|
+| `bdp-detection` | 512MB | 60s | MWAA DAG | AWS CloudWatch 로그/메트릭 이상 감지 |
+| `bdp-hdsp-detection` | 512MB | 60s | MWAA DAG | On-Prem K8s Prometheus 메트릭 감지 |
+| `bdp-cost-detection` | 512MB | 60s | MWAA DAG | AWS Cost Explorer 비용 이상 감지 |
+| `bdp-drift-detection` | 512MB | 120s | MWAA DAG | AWS 설정 Git Baseline 드리프트 감지 |
+
+### 공통 Lambda
+
+| Function | Memory | Timeout | Trigger | Description |
+|----------|--------|---------|---------|-------------|
+| `bdp-analysis` | 1024MB | 120s | Step Functions | LLM 기반 근본 원인 분석 |
+| `bdp-action` | 512MB | 60s | Step Functions | 복구 조치 실행 |
+| `bdp-approval` | 256MB | 30s | API Gateway | 승인 요청 처리 |
+
+## MWAA DAG 구성
+
+| DAG | Schedule | Target Lambda | Description |
+|-----|----------|---------------|-------------|
+| `bdp_detection_dag` | `*/5 * * * *` | bdp-detection | AWS 로그/메트릭 감지 |
+| `bdp_hdsp_detection_dag` | `*/5 * * * *` | bdp-hdsp-detection | K8s 장애 감지 |
+| `bdp_cost_detection_dag` | `*/5 * * * *` | bdp-cost-detection | 비용 이상 감지 |
+| `bdp_drift_detection_dag` | `*/5 * * * *` | bdp-drift-detection | 설정 드리프트 감지 |
 
 ## Cost Estimation
 
@@ -252,10 +280,16 @@ python -m examples.services.llm_client  # LLM Mock 테스트
 
 ## Documentation
 
+### 시스템 문서
 - [Architecture Guide](docs/ARCHITECTURE.md) - 상세 시스템 아키텍처
 - [Prompt Templates](docs/PROMPTS.md) - AI 프롬프트 설계
 - [Cost Optimization](docs/COST_OPTIMIZATION.md) - 비용 최적화 전략
 - [Implementation Guide](docs/IMPLEMENTATION_GUIDE.md) - 단계별 구현 가이드
+
+### 에이전트별 문서
+- [HDSP Detection](docs/HDSP_DETECTION.md) - On-Prem K8s 장애 감지 (HDSP Agent)
+- [Cost Anomaly Detection](docs/COST_ANOMALY_DETECTION.md) - 비용 이상 탐지 (Cost Agent)
+- [Config Drift Detection](docs/CONFIG_DRIFT_DETECTION.md) - 설정 드리프트 감지 (Drift Agent)
 
 ## Development
 

@@ -1,0 +1,438 @@
+{
+  "Comment": "Drift Agent Workflow - AWS Configuration Drift Detection, Analysis, Remediation",
+  "StartAt": "DetectConfigDrift",
+  "States": {
+    "DetectConfigDrift": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:bdp-drift-detection",
+      "Parameters": {
+        "resource_types": ["EKS", "MSK", "S3", "EMR", "MWAA"],
+        "severity_threshold": "LOW"
+      },
+      "ResultPath": "$.detection",
+      "Next": "CheckDriftsDetected",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleError"
+        }
+      ]
+    },
+
+    "CheckDriftsDetected": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.detection.drifts_detected",
+          "BooleanEquals": true,
+          "Next": "ClassifyDriftSeverity"
+        }
+      ],
+      "Default": "NoDriftsFound"
+    },
+
+    "NoDriftsFound": {
+      "Type": "Succeed",
+      "Comment": "No configuration drifts detected, workflow complete"
+    },
+
+    "ClassifyDriftSeverity": {
+      "Type": "Choice",
+      "Comment": "Route based on severity - critical/high goes to immediate analysis",
+      "Choices": [
+        {
+          "Variable": "$.detection.severity_summary.CRITICAL",
+          "NumericGreaterThan": 0,
+          "Next": "AnalyzeRootCause"
+        },
+        {
+          "Variable": "$.detection.severity_summary.HIGH",
+          "NumericGreaterThan": 0,
+          "Next": "AnalyzeRootCause"
+        }
+      ],
+      "Default": "LogMediumLowDrifts"
+    },
+
+    "LogMediumLowDrifts": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.drift",
+            "DetailType": "CONFIG_DRIFT_LOGGED",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "severity": "medium_or_low",
+              "total_drifts.$": "$.detection.total_drift_count",
+              "severity_summary.$": "$.detection.severity_summary",
+              "drift_details.$": "$.detection.drift_details"
+            }
+          }
+        ]
+      },
+      "Next": "WorkflowLoggedOnly"
+    },
+
+    "WorkflowLoggedOnly": {
+      "Type": "Succeed",
+      "Comment": "Medium/Low severity drifts logged for daily report"
+    },
+
+    "AnalyzeRootCause": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:bdp-analysis",
+      "Parameters": {
+        "anomaly_data": {
+          "signature.$": "States.Format('drift_{}', $$.Execution.Name)",
+          "anomaly_type": "config_drift",
+          "service_name": "drift-agent",
+          "agent": "drift",
+          "summary.$": "States.Format('Configuration drift detected: {} drifts across {} resources', $.detection.total_drift_count, $.detection.resources_analyzed)",
+          "anomaly_details.$": "$.detection.drift_details",
+          "severity_summary.$": "$.detection.severity_summary",
+          "baseline_info.$": "$.detection.baseline_info"
+        },
+        "workflow_id.$": "$$.Execution.Id",
+        "previous_attempts.$": "$.previous_attempts"
+      },
+      "ResultPath": "$.analysis",
+      "Next": "EvaluateConfidence",
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException"],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleError"
+        }
+      ]
+    },
+
+    "EvaluateConfidence": {
+      "Type": "Choice",
+      "Comment": "Config drift remediation always requires approval - production impact",
+      "Choices": [
+        {
+          "Variable": "$.analysis.analysis.confidence",
+          "NumericGreaterThanEquals": 0.5,
+          "Next": "RequestApproval"
+        }
+      ],
+      "Default": "EscalateToHuman"
+    },
+
+    "RequestApproval": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "Parameters": {
+        "FunctionName": "bdp-approval",
+        "Payload": {
+          "agent": "drift",
+          "analysis.$": "$.analysis",
+          "detection.$": "$.detection",
+          "taskToken.$": "$$.Task.Token"
+        }
+      },
+      "ResultPath": "$.approval",
+      "TimeoutSeconds": 7200,
+      "Next": "CheckApprovalResult",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.Timeout"],
+          "ResultPath": "$.error",
+          "Next": "ApprovalTimeout"
+        }
+      ]
+    },
+
+    "CheckApprovalResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.approval.approved",
+          "BooleanEquals": true,
+          "Next": "ExecuteApprovedRemediation"
+        }
+      ],
+      "Default": "ApprovalRejected"
+    },
+
+    "ExecuteApprovedRemediation": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:bdp-action",
+      "Parameters": {
+        "agent": "drift",
+        "actions.$": "$.analysis.analysis.recommended_actions",
+        "workflow_id.$": "$$.Execution.Id",
+        "approved_by.$": "$.approval.approved_by",
+        "drift_details.$": "$.detection.drift_details"
+      },
+      "ResultPath": "$.remediation",
+      "Next": "ReflectOnResult",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.error",
+          "Next": "HandleRemediationError"
+        }
+      ]
+    },
+
+    "ReflectOnResult": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:bdp-analysis",
+      "Parameters": {
+        "mode": "reflection",
+        "agent": "drift",
+        "remediation_result.$": "$.remediation",
+        "original_analysis.$": "$.analysis"
+      },
+      "ResultPath": "$.reflection",
+      "Next": "CheckReflectionResult"
+    },
+
+    "CheckReflectionResult": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.reflection.success",
+          "BooleanEquals": true,
+          "Next": "UpdateBaselineCheck"
+        },
+        {
+          "Variable": "$.reflection.requires_replan",
+          "BooleanEquals": true,
+          "Next": "CheckReplanAttempts"
+        }
+      ],
+      "Default": "UpdateBaselineCheck"
+    },
+
+    "UpdateBaselineCheck": {
+      "Type": "Choice",
+      "Comment": "Check if baseline update is recommended",
+      "Choices": [
+        {
+          "Variable": "$.reflection.update_baseline",
+          "BooleanEquals": true,
+          "Next": "PublishBaselineUpdateEvent"
+        }
+      ],
+      "Default": "WorkflowSuccess"
+    },
+
+    "PublishBaselineUpdateEvent": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.drift",
+            "DetailType": "DRIFT_BASELINE_UPDATE_REQUIRED",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "drift",
+              "drift_details.$": "$.detection.drift_details",
+              "baseline_info.$": "$.detection.baseline_info",
+              "recommendation": "Update GitLab baseline to match current approved configuration"
+            }
+          }
+        ]
+      },
+      "Next": "WorkflowSuccess"
+    },
+
+    "CheckReplanAttempts": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.replan_count",
+          "NumericLessThan": 3,
+          "Next": "IncrementReplanCount"
+        }
+      ],
+      "Default": "MaxReplansReached"
+    },
+
+    "IncrementReplanCount": {
+      "Type": "Pass",
+      "Parameters": {
+        "detection.$": "$.detection",
+        "replan_count.$": "States.MathAdd($.replan_count, 1)",
+        "previous_attempts.$": "States.Array($.analysis)"
+      },
+      "ResultPath": "$",
+      "Next": "AnalyzeRootCause"
+    },
+
+    "MaxReplansReached": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.drift",
+            "DetailType": "DRIFT_MAX_REPLANS_REACHED",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "reason": "Maximum replan attempts reached for config drift",
+              "context.$": "$"
+            }
+          }
+        ]
+      },
+      "Next": "EscalateToHuman"
+    },
+
+    "EscalateToHuman": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.drift",
+            "DetailType": "DRIFT_ESCALATION_REQUIRED",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "drift",
+              "reason": "Low confidence analysis requires human review",
+              "analysis.$": "$.analysis",
+              "drift_details.$": "$.detection.drift_details"
+            }
+          }
+        ]
+      },
+      "Next": "WorkflowEscalated"
+    },
+
+    "WorkflowSuccess": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.drift",
+            "DetailType": "DRIFT_REMEDIATION_SUCCESS",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "drift",
+              "summary.$": "$.reflection"
+            }
+          }
+        ]
+      },
+      "Next": "Success"
+    },
+
+    "Success": {
+      "Type": "Succeed"
+    },
+
+    "WorkflowEscalated": {
+      "Type": "Succeed",
+      "Comment": "Workflow escalated to human review"
+    },
+
+    "ApprovalRejected": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.drift",
+            "DetailType": "DRIFT_APPROVAL_REJECTED",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "drift"
+            }
+          }
+        ]
+      },
+      "Next": "ApprovalRejectedEnd"
+    },
+
+    "ApprovalRejectedEnd": {
+      "Type": "Succeed",
+      "Comment": "Drift remediation rejected by approver"
+    },
+
+    "ApprovalTimeout": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.drift",
+            "DetailType": "DRIFT_APPROVAL_TIMEOUT",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "drift"
+            }
+          }
+        ]
+      },
+      "Next": "WorkflowEscalated"
+    },
+
+    "HandleError": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.drift",
+            "DetailType": "DRIFT_WORKFLOW_ERROR",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "drift",
+              "error.$": "$.error"
+            }
+          }
+        ]
+      },
+      "Next": "WorkflowFailed"
+    },
+
+    "HandleRemediationError": {
+      "Type": "Task",
+      "Resource": "arn:aws:events:::event-bus/default",
+      "Parameters": {
+        "Entries": [
+          {
+            "Source": "bdp-agent.drift",
+            "DetailType": "DRIFT_REMEDIATION_ERROR",
+            "Detail": {
+              "workflow_id.$": "$$.Execution.Id",
+              "agent": "drift",
+              "error.$": "$.error"
+            }
+          }
+        ]
+      },
+      "Next": "CheckReplanAttempts"
+    },
+
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Error": "DriftWorkflowError",
+      "Cause": "Drift workflow failed due to unrecoverable error"
+    }
+  }
+}

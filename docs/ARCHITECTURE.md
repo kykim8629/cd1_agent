@@ -2,7 +2,20 @@
 
 ## Overview
 
-BDP (Big Data Platform) Agent는 AWS Lambda 기반 서버리스 아키텍처로 구현된 지능형 로그 분석 및 자동 복구 시스템입니다.
+BDP (Big Data Platform) Agent는 AWS Lambda 기반 서버리스 아키텍처로 구현된 **멀티 에이전트 이상 탐지 및 자동 복구 플랫폼**입니다.
+
+### 멀티 에이전트 아키텍처
+
+BDP Agent는 **4개의 독립적인 서브 에이전트**로 구성되어 있으며, 각 에이전트는 MWAA(Airflow)에서 5분 주기로 개별 호출됩니다.
+
+| Agent | 대상 | 탐지 방식 | Lambda |
+|-------|------|----------|--------|
+| **BDP Agent** | AWS 인프라 | CloudWatch Logs/Metrics | `bdp-detection` |
+| **HDSP Agent** | On-Prem K8s | Prometheus 메트릭 | `bdp-hdsp-detection` |
+| **Cost Agent** | AWS 비용 | Cost Explorer + Luminol | `bdp-cost-detection` |
+| **Drift Agent** | AWS 설정 | Git Baseline 비교 | `bdp-drift-detection` |
+
+각 에이전트는 **독립적인 Step Functions 워크플로우**를 통해 탐지 → 분석 → 복구 조치를 수행합니다.
 
 ### Provider Abstraction Pattern
 
@@ -42,38 +55,44 @@ BDP Agent는 Provider Abstraction 패턴을 사용하여 LLM과 AWS 서비스를
 
 ## System Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            BDP Agent Architecture                            │
-└─────────────────────────────────────────────────────────────────────────────┘
+### 멀티 에이전트 오케스트레이션
 
-                              ┌──────────────────┐
-                              │      MWAA        │
-                              │  (Airflow DAG)   │
-                              └────────┬─────────┘
-                                       │
-                                       ▼
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         MWAA (Airflow DAGs) - 5분 주기                    │
+└────────┬────────────────┬────────────────┬────────────────┬─────────────┘
+         │                │                │                │
+         ▼                ▼                ▼                ▼
+┌────────────────┐ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐
+│ BDP Agent      │ │ HDSP Agent     │ │ Cost Agent     │ │ Drift Agent    │
+│ (AWS 로그)     │ │ (Prometheus)   │ │ (Cost Explorer)│ │ (Git Baseline) │
+├────────────────┤ ├────────────────┤ ├────────────────┤ ├────────────────┤
+│ Detection      │ │ Detection      │ │ Detection      │ │ Detection      │
+│      ↓         │ │      ↓         │ │      ↓         │ │      ↓         │
+│ Step Functions │ │ Step Functions │ │ Step Functions │ │ Step Functions │
+│ (개별 WF)      │ │ (개별 WF)      │ │ (개별 WF)      │ │ (개별 WF)      │
+│      ↓         │ │      ↓         │ │      ↓         │ │      ↓         │
+│ Analysis       │ │ Analysis       │ │ Analysis       │ │ Analysis       │
+│      ↓         │ │      ↓         │ │      ↓         │ │      ↓         │
+│ Action         │ │ Action         │ │ Action         │ │ Action         │
+└────────────────┘ └────────────────┘ └────────────────┘ └────────────────┘
+         │                │                │                │
+         └────────────────┴────────────────┴────────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────┐
+                    │ 공통 컴포넌트            │
+                    │ - Analysis Agent (LLM)   │
+                    │ - Action Engine          │
+                    │ - EventBridge 알림       │
+                    └──────────────────────────┘
+```
+
+### 개별 에이전트 워크플로우
+
+```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                              Detection Phase                                  │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                   │
-│  │  CloudWatch  │    │     RDS      │    │  CloudWatch  │                   │
-│  │   Metrics    │    │ 통합로그     │    │    Logs      │                   │
-│  │ + Anomaly    │    │(Field Index) │    │              │                   │
-│  │  Detection   │    │              │    │              │                   │
-│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘                   │
-│         │                   │                   │                            │
-│         └───────────────────┼───────────────────┘                            │
-│                             ▼                                                │
-│                   ┌──────────────────┐                                       │
-│                   │  Lambda:         │                                       │
-│                   │  Detection       │──────▶ DynamoDB (Deduplication)      │
-│                   │  (512MB, ARM64)  │                                       │
-│                   └────────┬─────────┘                                       │
-└────────────────────────────┼─────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                         Step Functions Orchestration                          │
+│                         Step Functions (개별 워크플로우)                      │
 │                                                                               │
 │    ┌─────────┐     ┌─────────┐     ┌─────────┐     ┌─────────┐              │
 │    │ Detect  │────▶│ Analyze │────▶│Evaluate │────▶│Execute/ │              │
@@ -82,8 +101,8 @@ BDP Agent는 Provider Abstraction 패턴을 사용하여 LLM과 AWS 서비스를
 │                          │                              │                    │
 │                          ▼                              ▼                    │
 │                   ┌─────────────┐              ┌─────────────┐               │
-│                   │ vLLM/Gemini │              │  Remediate  │               │
-│                   │    (LLM)    │              │   Actions   │               │
+│                   │ vLLM/Gemini │              │   Actions   │               │
+│                   │    (LLM)    │              │             │               │
 │                   └─────────────┘              └─────────────┘               │
 │                                                      │                       │
 │                                                      ▼                       │
@@ -94,38 +113,24 @@ BDP Agent는 Provider Abstraction 패턴을 사용하여 LLM과 AWS 서비스를
 │                                                      ▲           │           │
 │                                                      └───────────┘           │
 └──────────────────────────────────────────────────────────────────────────────┘
-                             │
-                             ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                           복구 조치 (Actions)                                 │
-│                                                                               │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐     │
-│  │   Lambda     │  │     RDS      │  │ Auto Scaling │  │  EventBridge │     │
-│  │   Restart    │  │  Parameter   │  │   Adjust     │  │    Event     │     │
-│  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘     │
-│                                                               │              │
-│                                                               ▼              │
-│                                                    ┌──────────────────┐      │
-│                                                    │ 외부 알림 시스템  │      │
-│                                                    │ (Slack, Teams등) │      │
-│                                                    └──────────────────┘      │
-└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Component Details
 
-### 1. Detection Layer
+### 1. Detection Layer (에이전트별)
 
-#### Lambda: bdp-detection
-| 속성 | 값 |
-|------|-----|
-| Runtime | Python 3.12 |
-| Architecture | ARM64 (Graviton2) |
-| Memory | 512MB |
-| Timeout | 60s |
-| Trigger | MWAA (Airflow DAG) |
+#### 1.1 BDP Agent - AWS 로그/메트릭 감지
+
+| Lambda | 속성 |
+|--------|-----|
+| **Function** | `bdp-detection` |
+| **Runtime** | Python 3.12 |
+| **Architecture** | ARM64 (Graviton2) |
+| **Memory** | 512MB |
+| **Timeout** | 60s |
+| **Trigger** | MWAA (bdp_detection_dag) |
 
 **주요 기능**:
 1. CloudWatch Anomaly Detection 결과 조회
@@ -133,14 +138,71 @@ BDP Agent는 Provider Abstraction 패턴을 사용하여 LLM과 AWS 서비스를
 3. CloudWatch Logs 필터링
 4. Deduplication (DynamoDB 기반)
 
-#### Lambda: bdp-drift-detection
-| 속성 | 값 |
-|------|-----|
-| Runtime | Python 3.12 |
-| Architecture | ARM64 (Graviton2) |
-| Memory | 512MB |
-| Timeout | 120s |
-| Trigger | MWAA (Airflow DAG) |
+**탐지 타입**:
+- `log_anomaly`: 로그 패턴 이상 탐지
+- `metric_anomaly`: 메트릭 이상 탐지
+- `error_spike`: 에러 급증 탐지
+
+---
+
+#### 1.2 HDSP Agent - On-Prem K8s 장애 감지
+
+| Lambda | 속성 |
+|--------|-----|
+| **Function** | `bdp-hdsp-detection` |
+| **Runtime** | Python 3.12 |
+| **Architecture** | ARM64 (Graviton2) |
+| **Memory** | 512MB |
+| **Timeout** | 60s |
+| **Trigger** | MWAA (bdp_hdsp_detection_dag) |
+
+**주요 기능**:
+1. Prometheus 메트릭 수집 (VictoriaMetrics/Thanos 연동)
+2. Pod/Node 상태 모니터링
+3. CPU/Memory 이상 탐지
+4. OOMKill, CrashLoopBackOff 감지
+
+**탐지 타입**:
+- `pod_failure`: Pod 장애 탐지 (CrashLoopBackOff, OOMKilled)
+- `node_pressure`: Node 리소스 압박 탐지
+- `resource_anomaly`: CPU/Memory 비정상 사용량
+
+---
+
+#### 1.3 Cost Agent - 비용 이상 탐지
+
+| Lambda | 속성 |
+|--------|-----|
+| **Function** | `bdp-cost-detection` |
+| **Runtime** | Python 3.12 |
+| **Architecture** | ARM64 (Graviton2) |
+| **Memory** | 512MB |
+| **Timeout** | 60s |
+| **Trigger** | MWAA (bdp_cost_detection_dag) |
+
+**주요 기능**:
+1. AWS Cost Explorer API 조회
+2. LinkedIn Luminol 기반 시계열 이상 탐지
+3. 서비스별 비용 급증 감지
+4. 근본 원인 분석 (어떤 리소스가 급증했는지)
+
+**탐지 타입**:
+- `cost_spike`: 일별 비용 급증 탐지
+- `service_anomaly`: 서비스별 비용 이상 탐지
+- `resource_cost_drift`: 리소스별 비용 변동 탐지
+
+---
+
+#### 1.4 Drift Agent - 설정 드리프트 감지
+
+| Lambda | 속성 |
+|--------|-----|
+| **Function** | `bdp-drift-detection` |
+| **Runtime** | Python 3.12 |
+| **Architecture** | ARM64 (Graviton2) |
+| **Memory** | 512MB |
+| **Timeout** | 120s |
+| **Trigger** | MWAA (bdp_drift_detection_dag) |
 
 **주요 기능**:
 1. GitLab API를 통한 기준선 JSON 파일 조회
@@ -148,15 +210,10 @@ BDP Agent는 Provider Abstraction 패턴을 사용하여 LLM과 AWS 서비스를
 3. JSON Diff 기반 드리프트 탐지
 4. 심각도 분류 및 EventBridge 알림
 
-#### 탐지 타입
-
-| Type | Source | Handler | Description |
-|------|--------|---------|-------------|
-| `log_anomaly` | CloudWatch Logs | DetectionHandler | 로그 패턴 이상 탐지 |
-| `metric_anomaly` | CloudWatch Metrics | DetectionHandler | 메트릭 이상 탐지 |
-| `cost_anomaly` | Cost Explorer | CostDetectionHandler | 비용 이상 탐지 |
-| `config_drift` | GitLab + AWS APIs | DriftDetectionHandler | 구성 드리프트 탐지 |
-| `scheduled` | MWAA | DetectionHandler | 정기 통합 탐지 |
+**탐지 타입**:
+- `config_drift`: 구성 드리프트 탐지
+- `security_drift`: 보안 설정 변경 탐지
+- `compliance_drift`: 컴플라이언스 위반 탐지
 
 #### 데이터 소스 통합
 
@@ -744,10 +801,19 @@ Step Functions: AnalyzeRootCause
 
 ### Lambda Functions
 
+#### Detection Lambda (에이전트별)
+
 | Function | Memory | Timeout | Architecture | Trigger |
 |----------|--------|---------|--------------|---------|
-| bdp-detection | 512MB | 60s | ARM64 | MWAA (Airflow DAG) |
-| bdp-drift-detection | 512MB | 120s | ARM64 | MWAA (Airflow DAG) |
+| bdp-detection | 512MB | 60s | ARM64 | MWAA (bdp_detection_dag) |
+| bdp-hdsp-detection | 512MB | 60s | ARM64 | MWAA (bdp_hdsp_detection_dag) |
+| bdp-cost-detection | 512MB | 60s | ARM64 | MWAA (bdp_cost_detection_dag) |
+| bdp-drift-detection | 512MB | 120s | ARM64 | MWAA (bdp_drift_detection_dag) |
+
+#### 공통 Lambda
+
+| Function | Memory | Timeout | Architecture | Trigger |
+|----------|--------|---------|--------------|---------|
 | bdp-analysis | 1024MB | 120s | ARM64 | Step Functions |
 | bdp-action | 512MB | 60s | ARM64 | Step Functions |
 | bdp-approval | 256MB | 30s | ARM64 | API Gateway |
@@ -760,20 +826,26 @@ Step Functions: AnalyzeRootCause
 | bdp-workflow-state | On-Demand | 30 days | Workflow state |
 | bdp-action-history | On-Demand | 90 days | Audit trail |
 | bdp-config-drift-tracking | On-Demand | 90 days | Config drift history |
+| bdp-cost-anomaly-tracking | On-Demand | 90 days | Cost anomaly history |
 
 ### MWAA (Amazon Managed Workflows for Apache Airflow)
 
-| DAG | Schedule | Target |
-|-----|----------|--------|
-| bdp_detection_dag | Configurable (Airflow cron) | bdp-detection Lambda / Step Functions |
-| bdp_drift_detection_dag | Daily (09:00 KST) | bdp-drift-detection Lambda |
+| DAG | Schedule | Target Lambda | Description |
+|-----|----------|---------------|-------------|
+| bdp_detection_dag | `*/5 * * * *` | bdp-detection | AWS 로그/메트릭 감지 |
+| bdp_hdsp_detection_dag | `*/5 * * * *` | bdp-hdsp-detection | K8s 장애 감지 |
+| bdp_cost_detection_dag | `*/5 * * * *` | bdp-cost-detection | 비용 이상 감지 |
+| bdp_drift_detection_dag | `*/5 * * * *` | bdp-drift-detection | 설정 드리프트 감지 |
 
 ### Step Functions
 
 | State Machine | Purpose |
 |---------------|---------|
-| bdp-main-workflow | Main detection → analysis → action flow |
-| bdp-approval-workflow | Human approval sub-workflow |
+| bdp-main-workflow | BDP Agent 워크플로우 (detection → analysis → action) |
+| bdp-hdsp-workflow | HDSP Agent 워크플로우 (K8s 장애 감지) |
+| bdp-cost-workflow | Cost Agent 워크플로우 (비용 이상 탐지) |
+| bdp-drift-workflow | Drift Agent 워크플로우 (설정 드리프트 감지) |
+| bdp-approval-workflow | Human approval sub-workflow (공통) |
 
 ### IAM Roles
 
