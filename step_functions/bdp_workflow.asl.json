@@ -121,7 +121,7 @@
 
     "ExecuteApprovedRemediation": {
       "Type": "Task",
-      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:bdp-remediation",
+      "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:bdp-action",
       "Parameters": {
         "actions.$": "$.analysis.analysis.recommended_actions",
         "workflow_id.$": "$$.Execution.Id",
