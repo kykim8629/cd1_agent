@@ -54,9 +54,9 @@ BDP Agent의 비용 이상 탐지 모듈은 AWS Cost Explorer API를 통해 다�
 
 | 컴포넌트 | 파일 | 설명 |
 |---------|------|------|
-| Cost Explorer Client | `src/services/cost_explorer_client.py` | Cost Explorer API 추상화 |
-| Anomaly Detector | `src/services/cost_anomaly_detector.py` | 이상 탐지 알고리즘 엔진 |
-| Cost Detection Handler | `src/handlers/cost_detection_handler.py` | Lambda 핸들러 |
+| Cost Explorer Client | `src/agents/cost/services/cost_explorer_client.py` | Cost Explorer API 추상화 |
+| Anomaly Detector | `src/agents/cost/services/anomaly_detector.py` | 이상 탐지 알고리즘 엔진 |
+| Cost Detection Handler | `src/agents/cost/handler.py` | Lambda 핸들러 |
 
 ---
 
@@ -198,7 +198,7 @@ CloudWatch     │     Luminol          상관관계 결과
 ### 사용 예시
 
 ```python
-from src.services.cost_anomaly_detector import CostAnomalyDetector
+from src.agents.cost.services.anomaly_detector import CostAnomalyDetector
 
 detector = CostAnomalyDetector(use_luminol=True)
 
@@ -510,7 +510,7 @@ export AWS_MOCK=true
 
 ```python
 # Cost Explorer Client 테스트
-from src.services.cost_explorer_client import CostExplorerClient
+from src.agents.cost.services.cost_explorer_client import CostExplorerClient
 
 client = CostExplorerClient()
 costs = client.get_cost_and_usage(
@@ -525,7 +525,7 @@ print(f"Total cost: ${costs['total_cost']:.2f}")
 ### 이상 현상 주입 테스트
 
 ```python
-from src.services.cost_explorer_client import MockCostExplorerProvider
+from src.agents.cost.services.cost_explorer_client import MockCostExplorerProvider
 
 # Mock Provider 생성
 provider = MockCostExplorerProvider(account_id="test-account")
@@ -558,7 +558,7 @@ python -c "
 import os
 os.environ['AWS_MOCK'] = 'true'
 
-from src.handlers.cost_detection_handler import lambda_handler
+from src.agents.cost.handler import handler as lambda_handler
 import json
 
 class MockContext:

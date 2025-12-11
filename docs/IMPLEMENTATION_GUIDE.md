@@ -13,31 +13,77 @@
 ```
 bdp-agent/
 ├── src/
-│   ├── handlers/           # Lambda 핸들러
-│   │   ├── __init__.py
-│   │   ├── base_handler.py
-│   │   ├── detection_handler.py
-│   │   ├── analysis_handler.py
-│   │   └── remediation_handler.py
-│   ├── prompts/            # 프롬프트 템플릿
-│   │   ├── __init__.py
-│   │   └── analysis_prompts.py
-│   ├── services/           # 비즈니스 로직
-│   │   ├── __init__.py
-│   │   ├── llm_client.py         # vLLM/Gemini 통합 클라이언트
-│   │   ├── aws_client.py         # AWS 서비스 통합 클라이언트 (Mock 지원)
-│   │   ├── reflection_engine.py
-│   │   ├── log_collector.py
-│   │   └── remediation_executor.py
-│   ├── models/             # 데이터 모델
-│   │   ├── __init__.py
-│   │   ├── anomaly.py
-│   │   └── analysis_result.py
-│   └── knowledge/          # 도메인 지식
-│       ├── libraries/
-│       └── playbooks/
-├── step_functions/         # Step Functions 정의
+│   ├── common/                    # 공통 코드
+│   │   ├── handlers/              # 공통 Lambda 핸들러
+│   │   │   ├── __init__.py
+│   │   │   ├── base_handler.py
+│   │   │   ├── analysis_handler.py
+│   │   │   └── remediation_handler.py
+│   │   ├── services/              # 공통 서비스
+│   │   │   ├── __init__.py
+│   │   │   ├── llm_client.py      # vLLM/Gemini 통합 클라이언트
+│   │   │   ├── aws_client.py      # AWS 서비스 통합 클라이언트 (Mock 지원)
+│   │   │   ├── rds_client.py      # RDS Data API 클라이언트
+│   │   │   └── schema_loader.py   # 스키마 로더
+│   │   ├── models/                # 데이터 모델
+│   │   │   ├── __init__.py
+│   │   │   ├── anomaly.py
+│   │   │   ├── analysis_result.py
+│   │   │   └── agent_state.py
+│   │   ├── prompts/               # 프롬프트 템플릿
+│   │   │   ├── __init__.py
+│   │   │   ├── analysis_prompts.py
+│   │   │   ├── detection_prompts.py
+│   │   │   ├── reflection_prompts.py
+│   │   │   └── replan_prompts.py
+│   │   ├── agent/                 # LangGraph Agent
+│   │   │   ├── __init__.py
+│   │   │   ├── executor.py
+│   │   │   ├── graph.py
+│   │   │   ├── nodes.py
+│   │   │   └── tools.py
+│   │   └── chat/                  # Interactive Chat
+│   │       ├── __init__.py
+│   │       └── agent.py
+│   │
+│   └── agents/                    # Agent별 코드
+│       ├── bdp/                   # BDP Agent (AWS CloudWatch)
+│       │   ├── __init__.py
+│       │   └── handler.py         # DetectionHandler
+│       ├── hdsp/                  # HDSP Agent (Prometheus/K8s)
+│       │   ├── __init__.py
+│       │   ├── handler.py         # HDSPDetectionHandler
+│       │   └── services/
+│       │       ├── prometheus_client.py
+│       │       └── anomaly_detector.py
+│       ├── cost/                  # Cost Agent (AWS Cost Explorer)
+│       │   ├── __init__.py
+│       │   ├── handler.py         # CostDetectionHandler
+│       │   └── services/
+│       │       ├── cost_explorer_client.py
+│       │       └── anomaly_detector.py
+│       └── drift/                 # Drift Agent (GitLab Baseline)
+│           ├── __init__.py
+│           ├── handler.py         # DriftDetectionHandler
+│           └── services/
+│               ├── config_fetcher.py
+│               ├── drift_detector.py
+│               └── gitlab_client.py
+│
 ├── tests/
+│   ├── conftest.py                # 공통 fixtures
+│   ├── common/                    # 공통 코드 테스트
+│   │   ├── test_handlers.py
+│   │   ├── test_services.py
+│   │   ├── test_models.py
+│   │   └── test_prompts.py
+│   └── agents/                    # Agent별 테스트
+│       ├── bdp/
+│       ├── hdsp/
+│       ├── cost/
+│       └── drift/
+├── step_functions/                # Step Functions 정의
+├── dags/                          # Airflow DAG 파일
 └── docs/
 ```
 

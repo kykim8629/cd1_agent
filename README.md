@@ -120,18 +120,45 @@ stateDiagram-v2
 ```
 bdp-agent/
 ├── docs/
-│   ├── ARCHITECTURE.md      # 상세 아키텍처 문서
-│   ├── PROMPTS.md           # 프롬프트 템플릿 설계
-│   ├── COST_OPTIMIZATION.md # 비용 최적화 전략
-│   └── IMPLEMENTATION_GUIDE.md # 구현 가이드
-├── examples/
-│   ├── handlers/            # Lambda 핸들러 예제
-│   ├── prompts/             # 프롬프트 템플릿
-│   └── services/            # 비즈니스 로직 서비스
-├── src/                     # 실제 구현 코드
-├── step_functions/          # Step Functions 워크플로우
+│   ├── ARCHITECTURE.md           # 상세 아키텍처 문서
+│   ├── PROMPTS.md                # 프롬프트 템플릿 설계
+│   ├── COST_OPTIMIZATION.md      # 비용 최적화 전략
+│   ├── IMPLEMENTATION_GUIDE.md   # 구현 가이드
+│   ├── HDSP_DETECTION.md         # HDSP Agent 문서
+│   ├── COST_ANOMALY_DETECTION.md # Cost Agent 문서
+│   └── CONFIG_DRIFT_DETECTION.md # Drift Agent 문서
+├── src/
+│   ├── common/                   # 공통 코드
+│   │   ├── handlers/             # 공통 핸들러 (base, analysis, remediation)
+│   │   ├── services/             # 공통 서비스 (llm_client, aws_client, rds_client)
+│   │   ├── models/               # 데이터 모델
+│   │   ├── prompts/              # 프롬프트 템플릿
+│   │   ├── agent/                # LangGraph Agent
+│   │   └── chat/                 # Interactive Chat
+│   └── agents/                   # Agent별 코드
+│       ├── bdp/                  # BDP Agent (AWS CloudWatch)
+│       │   └── handler.py
+│       ├── hdsp/                 # HDSP Agent (Prometheus/K8s)
+│       │   ├── handler.py
+│       │   └── services/         # prometheus_client, anomaly_detector
+│       ├── cost/                 # Cost Agent (AWS Cost Explorer)
+│       │   ├── handler.py
+│       │   └── services/         # cost_explorer_client, anomaly_detector
+│       └── drift/                # Drift Agent (GitLab Baseline)
+│           ├── handler.py
+│           └── services/         # config_fetcher, drift_detector, gitlab_client
+├── tests/
+│   ├── common/                   # 공통 코드 테스트
+│   │   ├── agent/                # LangGraph 테스트
+│   │   └── chat/                 # Chat 테스트
+│   └── agents/                   # Agent별 테스트
+│       ├── bdp/
+│       ├── hdsp/
+│       ├── cost/
+│       └── drift/
+├── step_functions/               # Step Functions 워크플로우
 │   └── bdp_workflow.asl.json
-└── tests/                   # 테스트 코드
+└── dags/                         # Airflow DAG 파일
 ```
 
 ## Quick Start

@@ -96,10 +96,10 @@ BDP Agent의 구성 드리프트 탐지 모듈은 AWS 관리형 서비스(EKS, M
 
 | 컴포넌트 | 파일 | 설명 |
 |---------|------|------|
-| GitLab Client | `src/services/gitlab_client.py` | GitLab API 추상화 (기준선 파일 조회) |
-| Config Fetcher | `src/services/config_fetcher.py` | AWS Describe API 추상화 |
-| Drift Detector | `src/services/config_drift_detector.py` | JSON Diff 기반 드리프트 탐지 엔진 |
-| Drift Detection Handler | `src/handlers/drift_detection_handler.py` | Lambda 핸들러 |
+| GitLab Client | `src/agents/drift/services/gitlab_client.py` | GitLab API 추상화 (기준선 파일 조회) |
+| Config Fetcher | `src/agents/drift/services/config_fetcher.py` | AWS Describe API 추상화 |
+| Drift Detector | `src/agents/drift/services/drift_detector.py` | JSON Diff 기반 드리프트 탐지 엔진 |
+| Drift Detection Handler | `src/agents/drift/handler.py` | Lambda 핸들러 |
 
 ---
 
@@ -841,13 +841,35 @@ export GITLAB_MOCK=true
 ### GitLab Mock Client
 
 ```python
-from src.services.gitlab_client import MockGitLabClient
+from src.agents.drift.services.gitlab_client import GitLabClient, GitLabProvider
 
-# Mock Client 생성
-gitlab_client = MockGitLabClient()
+# Mock Client 생성 (Mock Provider 사용)
+gitlab_client = GitLabClient(provider=GitLabProvider.MOCK)
 
-# 테스트용 기준선 주입
-gitlab_client.set_baseline("baselines/eks/production-cluster.json", {
+# 기준선 조회 테스트
+baseline = gitlab_client.get_baseline_file(
+    file_path="baselines/eks/production-cluster.json"
+)
+print(baseline)
+```
+
+### 드리프트 주입 테스트
+
+```python
+from src.agents.drift.services.config_fetcher import ConfigFetcher, ConfigProvider
+from src.agents.drift.services.drift_detector import ConfigDriftDetector
+
+# Mock Fetcher 생성
+fetcher = ConfigFetcher(provider=ConfigProvider.MOCK)
+
+# 현재 구성 조회 (Mock 데이터 사용)
+current_config = fetcher.get_config(
+    resource_type="EKS",
+    resource_id="production-eks"
+)
+
+# 기준선 데이터 (예시)
+baseline = {
     "cluster_name": "production-eks",
     "version": "1.29",
     "node_groups": [
@@ -857,49 +879,21 @@ gitlab_client.set_baseline("baselines/eks/production-cluster.json", {
             "scaling_config": {"min_size": 3, "max_size": 10, "desired_size": 5}
         }
     ]
-})
-
-# 기준선 조회 테스트
-baseline = gitlab_client.get_baseline_file(
-    project_id="12345",
-    file_path="baselines/eks/production-cluster.json"
-)
-print(baseline)
-```
-
-### 드리프트 주입 테스트
-
-```python
-from src.services.config_fetcher import MockConfigFetcher
-from src.services.config_drift_detector import ConfigDriftDetector
-
-# Mock Fetcher 생성
-fetcher = MockConfigFetcher()
-
-# 현재 구성 주입 (드리프트 포함)
-fetcher.set_current_config("EKS", "production-eks", {
-    "cluster_name": "production-eks",
-    "version": "1.29",
-    "node_groups": [
-        {
-            "name": "general",
-            "instance_types": ["m5.large"],  # 드리프트: m6i.xlarge → m5.large
-            "scaling_config": {"min_size": 3, "max_size": 10, "desired_size": 3}  # 드리프트: 5 → 3
-        }
-    ]
-})
+}
 
 # 드리프트 탐지
 detector = ConfigDriftDetector()
 result = detector.detect(
     baseline=baseline,
-    current=fetcher.get_current_config("EKS", "production-eks")
+    current=current_config.config,
+    resource_type="EKS",
+    resource_id="production-eks"
 )
 
 print(f"Drift detected: {result.has_drift}")
 print(f"Severity: {result.max_severity}")
 for field in result.drifted_fields:
-    print(f"  - {field.name}: {field.baseline_value} → {field.current_value}")
+    print(f"  - {field.field_path}: {field.baseline_value} → {field.current_value}")
 ```
 
 ### Handler 통합 테스트
@@ -910,7 +904,7 @@ import os
 os.environ['AWS_MOCK'] = 'true'
 os.environ['GITLAB_MOCK'] = 'true'
 
-from src.handlers.drift_detection_handler import lambda_handler
+from src.agents.drift.handler import handler as lambda_handler
 import json
 
 class MockContext:
