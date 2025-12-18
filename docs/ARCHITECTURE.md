@@ -797,6 +797,194 @@ Step Functions: AnalyzeRootCause
 
 ---
 
+## Human-in-the-Loop (HITL) Architecture
+
+### 개요
+
+BDP Agent는 Chat Agent 기반의 **대화형 Human-in-the-Loop 인터페이스**를 제공합니다. LangGraph ReAct 워크플로우 내에서 신뢰도 기반 승인 요청을 생성하고, 외부 Streamlit UI를 통해 사용자 승인/거부/수정을 처리합니다.
+
+> **현재 상태**: HITL 백엔드 로직은 완전 구현됨. Streamlit UI는 설정만 존재하며 향후 구현 예정.
+
+### HITL 워크플로우
+
+```
+                     사용자 질의
+                          │
+                          ▼
+┌───────────────────────────────────────────────────────────────────────────┐
+│                      LangGraph Chat Agent                                   │
+│                                                                             │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐             │
+│  │  Plan    │───▶│   Act    │───▶│ Observe  │───▶│ Reflect  │             │
+│  │ (계획)   │    │ (실행)   │    │ (관찰)   │    │ (검토)   │             │
+│  └──────────┘    └──────────┘    └──────────┘    └────┬─────┘             │
+│                                                        │                    │
+│                              ┌─────────────────────────┼──────────┐        │
+│                              │                         │          │        │
+│                              ▼                         ▼          ▼        │
+│                     needs_replan?            needs_human_review?  respond  │
+│                         │                              │          │        │
+│                         ▼                              ▼          │        │
+│                    ┌──────────┐               ┌──────────────┐    │        │
+│                    │  Plan    │               │ Human Review │    │        │
+│                    │ (재계획) │               │  (승인 대기) │    │        │
+│                    └──────────┘               └──────┬───────┘    │        │
+│                                                      │            │        │
+│                                                      ▼            ▼        │
+│                                               ┌──────────────────────┐     │
+│                                               │       Respond        │     │
+│                                               │   (응답 생성)        │     │
+│                                               └──────────┬───────────┘     │
+└──────────────────────────────────────────────────────────┼─────────────────┘
+                                                           │
+                              ┌─────────────────────────────┼─────────────────┐
+                              │                             ▼                 │
+                              │                    ┌───────────────┐          │
+                              │                    │ 승인 요청     │          │
+                              │                    │ (Streamlit UI)│          │
+                              │                    └───────┬───────┘          │
+                              │                            │                  │
+                              │         ┌──────────────────┼──────────────┐   │
+                              │         │                  │              │   │
+                              │         ▼                  ▼              ▼   │
+                              │    ┌─────────┐       ┌─────────┐    ┌────────┐│
+                              │    │ APPROVED│       │MODIFIED │    │REJECTED││
+                              │    │ (승인)  │       │(수정승인)│    │ (거부) ││
+                              │    └────┬────┘       └────┬────┘    └────┬───┘│
+                              │         │                 │              │    │
+                              │         ▼                 ▼              ▼    │
+                              │    조치 실행         수정 후 실행    조치 취소 │
+                              └───────────────────────────────────────────────┘
+```
+
+### 승인 상태 (Approval States)
+
+| 상태 | 설명 | 후속 동작 |
+|------|------|-----------|
+| `PENDING` | 사용자 승인 대기 중 | 에이전트 일시 정지, UI에서 사용자 응답 대기 |
+| `APPROVED` | 승인됨 | 권장 조치 실행 |
+| `REJECTED` | 거부됨 | 조치 취소, 에이전트 종료 |
+| `MODIFIED` | 파라미터 수정 후 승인 | 수정된 파라미터로 조치 실행 |
+
+### HITL 트리거 조건
+
+Human Review 단계는 다음 조건에서 자동 트리거됩니다:
+
+| 조건 | 설명 | 임계값 |
+|------|------|--------|
+| **낮은 신뢰도** | 분석 결과 신뢰도가 임계값 미만 | `confidence < 0.5` (기본값) |
+| **LLM 에러** | LLM 호출 실패 또는 파싱 에러 | 에러 발생 시 |
+| **최대 반복 도달** | ReAct 루프 최대 반복 횟수 도달 | `iteration >= 5` (기본값) |
+| **명시적 요청** | 위험한 조치에 대한 명시적 승인 필요 | `require_approval_for_actions=True` |
+
+### 승인 대상 액션 타입
+
+분석 결과에서 자동 추출되는 액션 타입:
+
+| Action Type | 트리거 키워드 | 예상 영향 | 위험도 |
+|-------------|--------------|----------|--------|
+| `pod_restart` | "restart", "재시작" | Pod 재시작 시 일시적 서비스 중단 가능 | 중간 |
+| `resource_adjustment` | "memory", "메모리" | 리소스 조정 후 Pod 재시작 필요 | 중간 |
+| `auto_scaling` | "scaling", "스케일" | 인스턴스 수 변경에 따른 비용 영향 | 중간 |
+| `investigate` | "error", "오류" | 영향 없음 - 조사만 수행 | 낮음 |
+| `notify` | 기본값 | 영향 없음 - 알림만 발송 | 낮음 |
+
+### Streamlit UI 통합
+
+> **현재 상태**: 설정은 존재하나 UI 미구현. 향후 구현 예정.
+
+#### 환경 변수
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `STREAMLIT_PORT` | 8501 | Streamlit 서버 포트 |
+| `CHAT_APPROVAL_TIMEOUT` | 10 | 승인 요청 타임아웃 (분) |
+| `CHAT_SESSION_TIMEOUT` | 30 | 세션 타임아웃 (분) |
+| `CHAT_MAX_HISTORY` | 100 | 최대 대화 히스토리 수 |
+| `CHAT_MAX_ITERATIONS` | 5 | ReAct 루프 최대 반복 횟수 |
+| `CHAT_CONFIDENCE_THRESHOLD` | 0.5 | HITL 트리거 신뢰도 임계값 |
+
+#### Async Streaming API
+
+Chat Agent는 실시간 UI 업데이트를 위한 비동기 스트리밍을 지원합니다:
+
+```python
+async for event in chat_agent.stream(user_input):
+    match event["type"]:
+        case "state_update":
+            # phase: planning → acting → observing → reflecting
+            update_ui(event["node"], event["phase"], event["data"])
+        case "approval_request":
+            # 승인 요청 이벤트
+            show_approval_dialog(event["approval"])
+```
+
+**스트리밍 이벤트 타입:**
+- `state_update`: 실행 단계(phase) 변경 및 중간 결과
+- `approval_request`: 승인 요청 생성 시 전체 승인 정보 포함
+- `tool_execution`: 도구 실행 결과 (성공/실패, 실행 시간)
+- `confidence_update`: 신뢰도 점수 업데이트
+
+### 컴포넌트 구조
+
+```
+src/common/chat/
+├── config.py              # ChatConfig - HITL 및 UI 설정
+├── state.py               # ApprovalStatus, ApprovalRequest, ChatState
+├── agent.py               # ChatAgent.handle_approval(), stream()
+└── nodes/
+    ├── plan.py            # Plan 노드 - 실행 계획 수립
+    ├── act.py             # Act 노드 - Tool 실행
+    ├── observe.py         # Observe 노드 - 결과 관찰
+    ├── reflect.py         # Reflect 노드 - HITL 트리거 판단
+    ├── human_review.py    # Human Review 노드 - 승인 요청 생성/처리
+    └── respond.py         # Respond 노드 - 최종 응답 생성
+```
+
+| 컴포넌트 | 파일 | 역할 |
+|----------|------|------|
+| `ChatConfig` | `config.py` | HITL 설정 관리 (타임아웃, 임계값, UI 옵션) |
+| `ApprovalRequest` | `state.py` | 승인 요청 데이터 모델 |
+| `ApprovalStatus` | `state.py` | 승인 상태 열거형 (PENDING, APPROVED, REJECTED, MODIFIED) |
+| `human_review_node` | `nodes/human_review.py` | 승인 요청 생성 및 처리 |
+| `reflect_node` | `nodes/reflect.py` | 분석 검토 및 HITL 트리거 판단 |
+| `ChatAgent` | `agent.py` | 승인 처리 (`handle_approval`) 및 스트리밍 (`stream`) |
+
+### 승인 응답 예시
+
+분석 완료 시 사용자에게 표시되는 승인 프롬프트:
+
+```
+분석이 완료되었습니다.
+
+**분석 결과:**
+API Gateway에서 Connection Timeout 오류가 급증하고 있습니다.
+근본 원인: Backend 서비스의 메모리 부족으로 인한 응답 지연
+
+**권장 조치:** resource_adjustment
+**신뢰도:** 72.50%
+**예상 영향:** 리소스 조정 후 Pod 재시작 필요
+
+이 조치를 실행하시겠습니까?
+- [승인]: 권장 조치 실행
+- [수정 후 승인]: 파라미터 수정 후 실행
+- [거부]: 조치 취소
+- [추가 분석 요청]: 더 자세한 분석 수행
+```
+
+### Quick Actions
+
+Streamlit UI에서 제공되는 빠른 액션 목록:
+
+| Quick Action | 설명 |
+|--------------|------|
+| 자원 현황 | 현재 인프라 자원 상태 조회 |
+| 최근 이상 징후 | 최근 감지된 이상 현상 목록 |
+| 비용 분석 | AWS 비용 현황 및 이상 탐지 |
+| 설정 검사 | 설정 드리프트 검사 |
+
+---
+
 ## AWS Resources Summary
 
 ### Lambda Functions
