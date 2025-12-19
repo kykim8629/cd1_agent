@@ -68,23 +68,67 @@ flowchart TB
             baselineLoader["Baseline<br/>Loader"]
             configFetcher["Config<br/>Fetcher"]
             driftDetector["Drift<br/>Detector"]
+            driftAnalyzer["Drift<br/>Analyzer"]
             alertPublisher["Alert<br/>Publisher"]
 
-            baselineLoader --> configFetcher --> driftDetector --> alertPublisher
+            baselineLoader --> configFetcher --> driftDetector
+            driftDetector -->|"CRITICAL/HIGH"| driftAnalyzer
+            driftDetector -->|"MEDIUM/LOW"| alertPublisher
+            driftAnalyzer --> alertPublisher
         end
 
         baselines -->|"File Read"| baselineLoader
         eks & msk & s3 & emr & mwaaService -->|"AWS Describe APIs"| configFetcher
     end
 
+    subgraph llm["LLM Service"]
+        vllm["vLLM / Gemini"]
+    end
+
     subgraph outputs["Outputs"]
-        dynamodb["DynamoDB<br/>(Store)"]
-        eventbridge["EventBridge<br/>(Alert)"]
-        stepfuncs["Step Funcs<br/>(Analysis)"]
+        dynamodb["DynamoDB<br/>(Store + Analysis)"]
+        eventbridge["EventBridge<br/>(Alert + Analysis)"]
     end
 
     mwaa --> detection
-    alertPublisher --> dynamodb & eventbridge & stepfuncs
+    driftAnalyzer <-->|"ReAct Loop"| vllm
+    alertPublisher --> dynamodb & eventbridge
+```
+
+### LLM 기반 분석 상세 플로우
+
+```mermaid
+flowchart LR
+    subgraph input["Input"]
+        drift["Detected Drift<br/>(CRITICAL/HIGH)"]
+        baseline["Baseline Config"]
+        current["Current Config"]
+    end
+
+    subgraph react["ReAct Analysis Loop"]
+        plan["🎯 PLAN<br/>분석 계획 수립"]
+        analyze["🔍 ANALYZE<br/>LLM 원인 분석"]
+        reflect["🪞 REFLECT<br/>품질 평가"]
+
+        plan --> analyze --> reflect
+        reflect -->|"confidence < 0.7<br/>needs_replan"| plan
+    end
+
+    subgraph llm["LLM"]
+        model["vLLM / Gemini<br/>Structured Output"]
+    end
+
+    subgraph output["Output"]
+        result["DriftAnalysisResult"]
+        cause["원인 카테고리<br/>MANUAL_CHANGE<br/>AUTO_SCALING<br/>DEPLOYMENT_DRIFT<br/>..."]
+        remediation["조치 권고<br/>revert_to_baseline<br/>update_baseline<br/>escalate"]
+    end
+
+    drift & baseline & current --> plan
+    analyze <--> model
+    reflect <--> model
+    reflect -->|"confidence ≥ 0.7<br/>complete"| result
+    result --> cause & remediation
 ```
 
 ### 컴포넌트
