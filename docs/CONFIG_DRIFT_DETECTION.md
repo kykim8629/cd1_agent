@@ -2,14 +2,14 @@
 
 > **서브 에이전트**: Drift Agent (변경관리 Agent)
 >
-> GitLab 기준선 대비 AWS 리소스 구성 드리프트 탐지 시스템.
+> 로컬 기준선 대비 AWS 리소스 구성 드리프트 탐지 시스템.
 
 ## 목차
 
 1. [개요](#개요)
 2. [아키텍처](#아키텍처)
 3. [드리프트 탐지 알고리즘](#드리프트-탐지-알고리즘)
-4. [GitLab 통합](#gitlab-통합)
+4. [기준선 관리](#기준선-관리)
 5. [지원 리소스](#지원-리소스)
 6. [환경 변수](#환경-변수)
 7. [DynamoDB 테이블](#dynamodb-테이블)
@@ -21,11 +21,11 @@
 
 ## 개요
 
-BDP Agent의 구성 드리프트 탐지 모듈은 AWS 관리형 서비스(EKS, MSK, S3, EMR, MWAA)의 현재 구성을 GitLab에 저장된 JSON 기준선 파일과 비교하여 의도치 않은 구성 변경을 감지합니다.
+BDP Agent의 구성 드리프트 탐지 모듈은 AWS 관리형 서비스(EKS, MSK, S3, EMR, MWAA)의 현재 구성을 로컬 `conf/baselines/` 디렉토리에 저장된 JSON 기준선 파일과 비교하여 의도치 않은 구성 변경을 감지합니다.
 
 ### 주요 기능
 
-- **GitLab 기준선 관리**: JSON 형식의 구성 기준선 파일을 GitLab 저장소에서 버전 관리
+- **로컬 기준선 관리**: JSON 형식의 구성 기준선 파일을 agent의 `conf/baselines/` 디렉토리에서 관리
 - **다중 리소스 지원**: EKS, MSK, S3, EMR, MWAA 구성 드리프트 탐지
 - **Cross-Account 지원**: AssumeRole을 통한 다중 계정 구성 조회
 - **필드 레벨 비교**: JSON Diff 기반의 세분화된 드리프트 감지
@@ -51,8 +51,8 @@ flowchart TB
     end
 
     subgraph detection["Drift Detection Phase"]
-        subgraph gitlab["GitLab Repository"]
-            baselines["baselines/<br/>├── eks/<br/>├── msk/<br/>├── s3/<br/>├── emr/<br/>└── mwaa/"]
+        subgraph local["Local Baselines (conf/)"]
+            baselines["conf/baselines/<br/>├── eks/<br/>├── msk/<br/>├── s3/<br/>├── emr/<br/>└── mwaa/"]
         end
 
         subgraph aws["AWS Managed Services"]
@@ -64,15 +64,15 @@ flowchart TB
         end
 
         subgraph lambda["Lambda: bdp-drift-detection"]
-            gitlabClient["GitLab<br/>Client"]
+            baselineLoader["Baseline<br/>Loader"]
             configFetcher["Config<br/>Fetcher"]
             driftDetector["Drift<br/>Detector"]
             alertPublisher["Alert<br/>Publisher"]
 
-            gitlabClient --> configFetcher --> driftDetector --> alertPublisher
+            baselineLoader --> configFetcher --> driftDetector --> alertPublisher
         end
 
-        baselines -->|"GitLab API<br/>(GET /files)"| gitlabClient
+        baselines -->|"File Read"| baselineLoader
         eks & msk & s3 & emr & mwaaService -->|"AWS Describe APIs"| configFetcher
     end
 
@@ -90,7 +90,7 @@ flowchart TB
 
 | 컴포넌트 | 파일 | 설명 |
 |---------|------|------|
-| GitLab Client | `src/agents/drift/services/gitlab_client.py` | GitLab API 추상화 (기준선 파일 조회) |
+| Baseline Loader | `src/agents/drift/services/baseline_loader.py` | 로컬 기준선 파일 로드 |
 | Config Fetcher | `src/agents/drift/services/config_fetcher.py` | AWS Describe API 추상화 |
 | Drift Detector | `src/agents/drift/services/drift_detector.py` | JSON Diff 기반 드리프트 탐지 엔진 |
 | Drift Detection Handler | `src/agents/drift/handler.py` | Lambda 핸들러 |
@@ -103,7 +103,7 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    baseline["Baseline JSON<br/>(GitLab)"]
+    baseline["Baseline JSON<br/>(conf/baselines/)"]
     current["Current Config<br/>(AWS API)"]
 
     baseline --> normalize
@@ -233,34 +233,14 @@ SEVERITY_MAPPING = {
 
 ---
 
-## GitLab 통합
+## 기준선 관리
 
-### GitLab API 설정
+### 디렉토리 구조
 
-```python
-class GitLabClient:
-    """GitLab API 클라이언트."""
-
-    def __init__(self, base_url: str, private_token: str):
-        self.base_url = base_url
-        self.headers = {"PRIVATE-TOKEN": private_token}
-
-    def get_baseline_file(
-        self,
-        project_id: str,
-        file_path: str,
-        ref: str = "main"
-    ) -> dict:
-        """기준선 JSON 파일 조회."""
-        url = f"{self.base_url}/projects/{project_id}/repository/files/{file_path}/raw"
-        response = requests.get(url, headers=self.headers, params={"ref": ref})
-        return json.loads(response.text)
-```
-
-### 기준선 파일 저장소 구조
+기준선 파일은 agent의 `conf/baselines/` 디렉토리에서 관리합니다.
 
 ```
-gitlab-repo/
+conf/
 └── baselines/
     ├── eks/
     │   ├── production-cluster.json
@@ -281,14 +261,73 @@ gitlab-repo/
         └── _schema.json
 ```
 
-### 인증 설정
+### Baseline Loader
 
-| 환경 변수 | 설명 | 예시 |
-|----------|------|------|
-| `GITLAB_BASE_URL` | GitLab API URL | `https://gitlab.company.com/api/v4` |
-| `GITLAB_PRIVATE_TOKEN` | Personal Access Token | `glpat-xxxxx` |
-| `GITLAB_PROJECT_ID` | 프로젝트 ID | `12345` |
-| `GITLAB_BASELINE_REF` | 브랜치/태그 | `main` |
+```python
+import json
+from pathlib import Path
+from typing import Optional
+
+
+class BaselineLoader:
+    """로컬 기준선 파일 로더."""
+
+    def __init__(self, baselines_dir: str = "conf/baselines"):
+        self.baselines_dir = Path(baselines_dir)
+
+    def get_baseline(
+        self,
+        resource_type: str,
+        resource_id: str
+    ) -> Optional[dict]:
+        """기준선 JSON 파일 로드."""
+        # 리소스 타입별 디렉토리
+        type_dir = self.baselines_dir / resource_type.lower()
+
+        # 파일명 패턴: {resource_id}.json
+        baseline_file = type_dir / f"{resource_id}.json"
+
+        if not baseline_file.exists():
+            return None
+
+        with open(baseline_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def list_baselines(self, resource_type: str) -> list[str]:
+        """특정 리소스 타입의 모든 기준선 파일 목록 반환."""
+        type_dir = self.baselines_dir / resource_type.lower()
+
+        if not type_dir.exists():
+            return []
+
+        return [
+            f.stem  # 확장자 제외한 파일명
+            for f in type_dir.glob("*.json")
+            if not f.name.startswith("_")  # _schema.json 등 제외
+        ]
+
+    def get_baseline_hash(self, resource_type: str, resource_id: str) -> Optional[str]:
+        """기준선 파일의 해시값 반환 (변경 추적용)."""
+        import hashlib
+
+        baseline_file = self.baselines_dir / resource_type.lower() / f"{resource_id}.json"
+
+        if not baseline_file.exists():
+            return None
+
+        with open(baseline_file, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()[:12]
+```
+
+### 기준선 파일 명명 규칙
+
+| 리소스 타입 | 파일명 패턴 | 예시 |
+|------------|------------|------|
+| EKS | `{cluster-name}.json` | `production-eks.json` |
+| MSK | `{cluster-name}.json` | `production-kafka.json` |
+| S3 | `{bucket-name}.json` | `data-lake-prod.json` |
+| EMR | `{cluster-name}.json` | `analytics-emr-prod.json` |
+| MWAA | `{environment-name}.json` | `bdp-airflow-prod.json` |
 
 ---
 
@@ -567,11 +606,7 @@ mwaa_client.get_environment(Name="environment-name")
 | 변수명 | 설명 | 기본값 |
 |--------|------|--------|
 | `AWS_MOCK` | Mock 모드 활성화 | `false` |
-| `GITLAB_BASE_URL` | GitLab API URL | Required |
-| `GITLAB_PRIVATE_TOKEN` | GitLab Access Token | Required |
-| `GITLAB_PROJECT_ID` | 기준선 저장소 프로젝트 ID | Required |
-| `GITLAB_BASELINE_REF` | Git 브랜치/태그 | `main` |
-| `GITLAB_BASELINE_PATH` | 기준선 파일 경로 | `baselines/` |
+| `BASELINES_DIR` | 기준선 파일 디렉토리 경로 | `conf/baselines` |
 | `CONFIG_DRIFT_TABLE` | 드리프트 이력 테이블 | `bdp-config-drift-tracking` |
 | `EVENT_BUS_NAME` | EventBridge 버스 이름 | `default` |
 
@@ -609,7 +644,7 @@ export MWAA_ENVIRONMENTS='["bdp-airflow-prod"]'
 | `resource_type` | String | EKS / MSK / S3 / EMR / MWAA |
 | `drift_type` | String | ADDED / MODIFIED / REMOVED |
 | `drifted_fields` | List | 드리프트 발생 필드 목록 |
-| `baseline_version` | String | GitLab 커밋 SHA |
+| `baseline_hash` | String | 기준선 파일 해시 (SHA256 앞 12자리) |
 | `baseline_values` | Map | 기준선 값 |
 | `current_values` | Map | 현재 값 |
 | `severity` | String | CRITICAL / HIGH / MEDIUM / LOW |
@@ -667,8 +702,8 @@ export MWAA_ENVIRONMENTS='["bdp-airflow-prod"]'
         "severity": "MEDIUM"
       }
     ],
-    "baseline_version": "abc123def456",
-    "baseline_file": "baselines/eks/production-cluster.json",
+    "baseline_hash": "abc123def456",
+    "baseline_file": "conf/baselines/eks/production-eks.json",
     "detected_at": "2024-01-15T10:30:00Z"
   }
 }
@@ -708,7 +743,6 @@ response = lambda_client.invoke(
             "MSK": ["arn:aws:kafka:..."],
             "S3": ["data-lake-prod"]
         },
-        "baseline_ref": "main",
         "severity_threshold": "MEDIUM"
     })
 )
@@ -747,8 +781,8 @@ print(result)
       }
     ],
     "baseline_info": {
-      "ref": "main",
-      "commit_sha": "abc123def456"
+      "baselines_dir": "conf/baselines",
+      "baseline_hash": "abc123def456"
     },
     "execution_time_ms": 3250
   }
@@ -807,22 +841,33 @@ with DAG(
 
 ```bash
 export AWS_MOCK=true
-export GITLAB_MOCK=true
 ```
 
-### GitLab Mock Client
+### Baseline Loader 테스트
 
 ```python
-from src.agents.drift.services.gitlab_client import GitLabClient, GitLabProvider
+from src.agents.drift.services.baseline_loader import BaselineLoader
 
-# Mock Client 생성 (Mock Provider 사용)
-gitlab_client = GitLabClient(provider=GitLabProvider.MOCK)
+# 로컬 기준선 로더 생성
+loader = BaselineLoader(baselines_dir="conf/baselines")
 
-# 기준선 조회 테스트
-baseline = gitlab_client.get_baseline_file(
-    file_path="baselines/eks/production-cluster.json"
+# 기준선 조회
+baseline = loader.get_baseline(
+    resource_type="EKS",
+    resource_id="production-eks"
 )
 print(baseline)
+
+# 기준선 목록 조회
+baselines = loader.list_baselines(resource_type="EKS")
+print(f"EKS baselines: {baselines}")
+
+# 기준선 해시 조회
+hash_value = loader.get_baseline_hash(
+    resource_type="EKS",
+    resource_id="production-eks"
+)
+print(f"Baseline hash: {hash_value}")
 ```
 
 ### 드리프트 주입 테스트
@@ -830,6 +875,7 @@ print(baseline)
 ```python
 from src.agents.drift.services.config_fetcher import ConfigFetcher, ConfigProvider
 from src.agents.drift.services.drift_detector import ConfigDriftDetector
+from src.agents.drift.services.baseline_loader import BaselineLoader
 
 # Mock Fetcher 생성
 fetcher = ConfigFetcher(provider=ConfigProvider.MOCK)
@@ -840,18 +886,12 @@ current_config = fetcher.get_config(
     resource_id="production-eks"
 )
 
-# 기준선 데이터 (예시)
-baseline = {
-    "cluster_name": "production-eks",
-    "version": "1.29",
-    "node_groups": [
-        {
-            "name": "general",
-            "instance_types": ["m6i.xlarge"],
-            "scaling_config": {"min_size": 3, "max_size": 10, "desired_size": 5}
-        }
-    ]
-}
+# 기준선 로드
+loader = BaselineLoader()
+baseline = loader.get_baseline(
+    resource_type="EKS",
+    resource_id="production-eks"
+)
 
 # 드리프트 탐지
 detector = ConfigDriftDetector()
@@ -874,7 +914,6 @@ for field in result.drifted_fields:
 python -c "
 import os
 os.environ['AWS_MOCK'] = 'true'
-os.environ['GITLAB_MOCK'] = 'true'
 
 from src.agents.drift.handler import handler as lambda_handler
 import json
@@ -906,4 +945,3 @@ print(json.dumps(json.loads(result['body']), indent=2))
 - [AWS S3 API Reference](https://docs.aws.amazon.com/AmazonS3/latest/API/)
 - [AWS EMR API Reference](https://docs.aws.amazon.com/emr/latest/APIReference/)
 - [AWS MWAA API Reference](https://docs.aws.amazon.com/mwaa/latest/API/)
-- [GitLab Repository Files API](https://docs.gitlab.com/ee/api/repository_files.html)

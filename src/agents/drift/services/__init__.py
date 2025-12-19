@@ -14,11 +14,15 @@ from src.agents.drift.services.drift_detector import (
     DriftResult,
     AggregatedDriftResult,
 )
-from src.agents.drift.services.gitlab_client import (
-    GitLabClient,
-    GitLabProvider,
+from src.agents.drift.services.baseline_loader import (
+    BaselineLoader,
+    BaselineProvider,
     BaselineFile,
 )
+
+# Backward compatibility aliases
+GitLabClient = BaselineLoader
+GitLabProvider = BaselineProvider
 
 __all__ = [
     # Config fetcher
@@ -33,8 +37,11 @@ __all__ = [
     "DriftedField",
     "DriftResult",
     "AggregatedDriftResult",
-    # GitLab client
+    # Baseline loader (new)
+    "BaselineLoader",
+    "BaselineProvider",
+    "BaselineFile",
+    # Backward compatibility aliases
     "GitLabClient",
     "GitLabProvider",
-    "BaselineFile",
 ]

@@ -2,7 +2,7 @@
 Drift Detection Handler for AWS Configuration Drift Detection Lambda.
 
 Entry point for Drift Agent - detects configuration drifts between
-GitLab baselines and current AWS resource configurations.
+local baseline files and current AWS resource configurations.
 """
 
 import json
@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from src.common.handlers.base_handler import BaseHandler
-from src.agents.drift.services.gitlab_client import GitLabClient
+from src.agents.drift.services.baseline_loader import BaselineLoader
 from src.agents.drift.services.config_fetcher import ConfigFetcher, ResourceType
 from src.agents.drift.services.drift_detector import (
     ConfigDriftDetector,
@@ -44,7 +44,7 @@ class DriftDetectionHandler(BaseHandler):
     """
     Lambda handler for AWS configuration drift detection.
 
-    Compares current AWS resource configurations against GitLab baselines
+    Compares current AWS resource configurations against local baseline files
     to detect and classify configuration drifts:
     - EKS: Cluster and node group configurations
     - MSK: Kafka cluster configurations
@@ -64,8 +64,8 @@ class DriftDetectionHandler(BaseHandler):
         aws_provider = AWSProvider(self.config["aws_provider"])
         self.aws_client = AWSClient(provider=aws_provider)
 
-        # GitLab and Config clients auto-detect mock mode
-        self.gitlab_client = GitLabClient()
+        # Baseline loader and Config fetcher auto-detect mock mode
+        self.baseline_loader = BaselineLoader()
         self.config_fetcher = ConfigFetcher()
         self.drift_detector = ConfigDriftDetector()
 
@@ -149,18 +149,18 @@ class DriftDetectionHandler(BaseHandler):
         drifts: List[DriftResult] = []
         resources_analyzed = 0
 
-        # Get baseline commit info
+        # Get baseline source info
         try:
-            commit_info = self.gitlab_client.get_commit_info(ref=baseline_ref)
+            loader_info = self.baseline_loader.get_baseline_info()
             baseline_info = {
-                "ref": baseline_ref or self.gitlab_client.baseline_ref,
-                "commit_sha": commit_info.get("sha", ""),
+                "source": loader_info.get("source", "local_filesystem"),
+                "baselines_dir": loader_info.get("baselines_dir", "conf/baselines"),
             }
         except Exception as e:
-            self.logger.warning(f"Failed to get baseline commit info: {e}")
+            self.logger.warning(f"Failed to get baseline info: {e}")
             baseline_info = {
-                "ref": baseline_ref or self.gitlab_client.baseline_ref,
-                "commit_sha": "unknown",
+                "source": "unknown",
+                "baselines_dir": "conf/baselines",
             }
 
         for resource_type in resource_types:
@@ -174,8 +174,6 @@ class DriftDetectionHandler(BaseHandler):
                     drift_result = self._check_resource_drift(
                         resource_type=rt_upper,
                         resource_id=resource_id,
-                        baseline_ref=baseline_ref,
-                        baseline_version=baseline_info.get("commit_sha", ""),
                     )
 
                     # Apply severity filter
@@ -201,17 +199,14 @@ class DriftDetectionHandler(BaseHandler):
         self,
         resource_type: str,
         resource_id: str,
-        baseline_ref: Optional[str],
-        baseline_version: str,
     ) -> DriftResult:
         """Check drift for a single resource."""
         self.logger.debug(f"Checking drift for {resource_type}:{resource_id}")
 
-        # Get baseline from GitLab
-        baseline_file = self.gitlab_client.get_resource_baseline(
+        # Get baseline from local files
+        baseline_file = self.baseline_loader.get_resource_baseline(
             resource_type=resource_type.lower(),
             resource_name=resource_id,
-            ref=baseline_ref,
         )
 
         # Get current config from AWS
@@ -227,7 +222,7 @@ class DriftDetectionHandler(BaseHandler):
             resource_type=resource_type,
             resource_id=resource_id,
             resource_arn=current_config.resource_arn,
-            baseline_version=baseline_version,
+            baseline_version=baseline_file.file_hash,
         )
 
     def _meets_severity_threshold(

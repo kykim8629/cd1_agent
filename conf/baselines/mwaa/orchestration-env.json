@@ -1,0 +1,12 @@
+{
+  "environment_name": "bdp-airflow-prod",
+  "airflow_version": "2.8.1",
+  "environment_class": "mw1.medium",
+  "min_workers": 2,
+  "max_workers": 10,
+  "schedulers": 2,
+  "webserver_access_mode": "PRIVATE_ONLY",
+  "tags": {
+    "Environment": "production"
+  }
+}

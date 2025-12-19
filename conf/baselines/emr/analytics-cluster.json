@@ -1,0 +1,18 @@
+{
+  "cluster_name": "analytics-emr-prod",
+  "release_label": "emr-7.0.0",
+  "applications": ["Spark", "Hadoop", "Hive"],
+  "instance_groups": {
+    "master": {
+      "instance_type": "m5.xlarge",
+      "instance_count": 1
+    },
+    "core": {
+      "instance_type": "r5.2xlarge",
+      "instance_count": 4
+    }
+  },
+  "tags": {
+    "Environment": "production"
+  }
+}

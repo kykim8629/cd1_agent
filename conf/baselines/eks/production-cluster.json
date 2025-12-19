@@ -1,0 +1,31 @@
+{
+  "cluster_name": "production-eks",
+  "version": "1.29",
+  "endpoint_public_access": false,
+  "endpoint_private_access": true,
+  "logging": {
+    "api": true,
+    "audit": true,
+    "authenticator": true,
+    "controllerManager": true,
+    "scheduler": true
+  },
+  "node_groups": [
+    {
+      "name": "general-workload",
+      "instance_types": ["m6i.xlarge", "m6i.2xlarge"],
+      "scaling_config": {
+        "min_size": 3,
+        "max_size": 10,
+        "desired_size": 5
+      },
+      "disk_size": 100,
+      "ami_type": "AL2_x86_64",
+      "capacity_type": "ON_DEMAND"
+    }
+  ],
+  "tags": {
+    "Environment": "production",
+    "ManagedBy": "bdp-agent"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "cluster_name": "production-kafka",
+  "kafka_version": "3.5.1",
+  "broker_config": {
+    "instance_type": "kafka.m5.large",
+    "number_of_broker_nodes": 3,
+    "storage_info": {
+      "ebs_storage_info": {
+        "volume_size": 1000,
+        "provisioned_throughput": {
+          "enabled": true,
+          "volume_throughput": 250
+        }
+      }
+    }
+  },
+  "encryption_info": {
+    "encryption_at_rest": true,
+    "encryption_in_transit": "TLS"
+  },
+  "enhanced_monitoring": "PER_TOPIC_PER_BROKER",
+  "tags": {
+    "Environment": "production"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "bucket_name": "company-data-lake-prod",
+  "versioning": {
+    "status": "Enabled"
+  },
+  "encryption": {
+    "sse_algorithm": "aws:kms",
+    "kms_master_key_id": "alias/data-lake-key",
+    "bucket_key_enabled": true
+  },
+  "public_access_block": {
+    "block_public_acls": true,
+    "ignore_public_acls": true,
+    "block_public_policy": true,
+    "restrict_public_buckets": true
+  },
+  "tags": {
+    "Environment": "production",
+    "DataClassification": "confidential"
+  }
+}
