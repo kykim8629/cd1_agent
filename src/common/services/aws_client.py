@@ -18,6 +18,7 @@ class AWSProvider(str, Enum):
 
     REAL = "real"
     MOCK = "mock"
+    LOCALSTACK = "localstack"
 
 
 class BaseAWSProvider(ABC):
@@ -303,6 +304,236 @@ class RealAWSProvider(BaseAWSProvider):
             }
             for result in response.get("retrievalResults", [])
         ]
+
+
+class LocalStackAWSProvider(BaseAWSProvider):
+    """LocalStack AWS provider for integration testing.
+
+    Connects to LocalStack services via configurable endpoint URL.
+    Provides real AWS API behavior without cloud costs.
+    """
+
+    def __init__(
+        self,
+        region: Optional[str] = None,
+        endpoint_url: Optional[str] = None,
+    ):
+        import boto3
+
+        self.region = region or os.getenv("AWS_REGION", "ap-northeast-2")
+        self.endpoint_url = endpoint_url or os.getenv(
+            "LOCALSTACK_ENDPOINT", "http://localhost:4566"
+        )
+        self.session = boto3.Session(region_name=self.region)
+        self._clients: Dict[str, Any] = {}
+
+    def _get_client(self, service: str) -> Any:
+        """Get or create boto3 client with LocalStack endpoint."""
+        if service not in self._clients:
+            self._clients[service] = self.session.client(
+                service,
+                endpoint_url=self.endpoint_url,
+                # LocalStack doesn't require real credentials
+                aws_access_key_id="test",
+                aws_secret_access_key="test",
+            )
+        return self._clients[service]
+
+    def get_cloudwatch_metrics(
+        self,
+        namespace: str,
+        metric_name: str,
+        dimensions: List[Dict[str, str]],
+        start_time: datetime,
+        end_time: datetime,
+        period: int = 300,
+        statistic: str = "Average",
+    ) -> Dict[str, Any]:
+        """Get CloudWatch metrics from LocalStack."""
+        client = self._get_client("cloudwatch")
+        response = client.get_metric_statistics(
+            Namespace=namespace,
+            MetricName=metric_name,
+            Dimensions=[{"Name": k, "Value": v} for d in dimensions for k, v in d.items()],
+            StartTime=start_time,
+            EndTime=end_time,
+            Period=period,
+            Statistics=[statistic],
+        )
+        return {
+            "namespace": namespace,
+            "metric": metric_name,
+            "datapoints": response.get("Datapoints", []),
+        }
+
+    def query_cloudwatch_logs(
+        self,
+        log_group: str,
+        query: str,
+        start_time: datetime,
+        end_time: datetime,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """Query CloudWatch Logs Insights from LocalStack."""
+        client = self._get_client("logs")
+
+        # Note: LocalStack's Logs Insights has limited support
+        # Fall back to filter_log_events for basic queries
+        try:
+            response = client.start_query(
+                logGroupName=log_group,
+                startTime=int(start_time.timestamp()),
+                endTime=int(end_time.timestamp()),
+                queryString=query,
+                limit=limit,
+            )
+            query_id = response["queryId"]
+
+            import time
+
+            max_attempts = 10
+            for _ in range(max_attempts):
+                result = client.get_query_results(queryId=query_id)
+                if result["status"] in ["Complete", "Failed", "Cancelled"]:
+                    break
+                time.sleep(0.5)
+
+            return [
+                {field["field"]: field["value"] for field in row}
+                for row in result.get("results", [])
+            ]
+        except Exception:
+            # Fallback: Use filter_log_events for LocalStack compatibility
+            response = client.filter_log_events(
+                logGroupName=log_group,
+                startTime=int(start_time.timestamp() * 1000),
+                endTime=int(end_time.timestamp() * 1000),
+                limit=limit,
+            )
+            return [
+                {
+                    "@timestamp": datetime.fromtimestamp(
+                        event["timestamp"] / 1000
+                    ).isoformat(),
+                    "@message": event["message"],
+                    "@logStream": event.get("logStreamName", ""),
+                }
+                for event in response.get("events", [])
+            ]
+
+    def put_dynamodb_item(
+        self, table_name: str, item: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Put item to DynamoDB in LocalStack."""
+        client = self._get_client("dynamodb")
+        from boto3.dynamodb.types import TypeSerializer
+
+        serializer = TypeSerializer()
+        serialized = {k: serializer.serialize(v) for k, v in item.items()}
+        response = client.put_item(TableName=table_name, Item=serialized)
+        return {"status": "success", "response": response}
+
+    def get_dynamodb_item(
+        self, table_name: str, key: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Get item from DynamoDB in LocalStack."""
+        client = self._get_client("dynamodb")
+        from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
+
+        serializer = TypeSerializer()
+        deserializer = TypeDeserializer()
+        serialized_key = {k: serializer.serialize(v) for k, v in key.items()}
+
+        response = client.get_item(TableName=table_name, Key=serialized_key)
+        if "Item" not in response:
+            return None
+        return {k: deserializer.deserialize(v) for k, v in response["Item"].items()}
+
+    def query_dynamodb(
+        self,
+        table_name: str,
+        key_condition: str,
+        expression_values: Dict[str, Any],
+        index_name: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Query DynamoDB table in LocalStack."""
+        client = self._get_client("dynamodb")
+        from boto3.dynamodb.types import TypeSerializer, TypeDeserializer
+
+        serializer = TypeSerializer()
+        deserializer = TypeDeserializer()
+
+        params: Dict[str, Any] = {
+            "TableName": table_name,
+            "KeyConditionExpression": key_condition,
+            "ExpressionAttributeValues": {
+                k: serializer.serialize(v) for k, v in expression_values.items()
+            },
+            "Limit": limit,
+        }
+        if index_name:
+            params["IndexName"] = index_name
+
+        response = client.query(**params)
+        return [
+            {k: deserializer.deserialize(v) for k, v in item.items()}
+            for item in response.get("Items", [])
+        ]
+
+    def invoke_lambda(
+        self, function_name: str, payload: Dict[str, Any], invocation_type: str = "RequestResponse"
+    ) -> Dict[str, Any]:
+        """Invoke Lambda function in LocalStack."""
+        client = self._get_client("lambda")
+        response = client.invoke(
+            FunctionName=function_name,
+            InvocationType=invocation_type,
+            Payload=json.dumps(payload).encode(),
+        )
+
+        if invocation_type == "RequestResponse":
+            result = json.loads(response["Payload"].read().decode())
+            return {"status_code": response["StatusCode"], "result": result}
+        return {"status_code": response["StatusCode"]}
+
+    def put_eventbridge_event(
+        self,
+        event_bus: str,
+        source: str,
+        detail_type: str,
+        detail: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Put event to EventBridge in LocalStack."""
+        client = self._get_client("events")
+        response = client.put_events(
+            Entries=[
+                {
+                    "EventBusName": event_bus,
+                    "Source": source,
+                    "DetailType": detail_type,
+                    "Detail": json.dumps(detail),
+                }
+            ]
+        )
+        return {
+            "failed_count": response["FailedEntryCount"],
+            "entries": response["Entries"],
+        }
+
+    def retrieve_knowledge_base(
+        self,
+        knowledge_base_id: str,
+        query: str,
+        max_results: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve from Knowledge Base (not supported in LocalStack).
+
+        Returns empty results as Bedrock is not available in LocalStack.
+        """
+        # Bedrock Agent Runtime is not available in LocalStack
+        # Return empty results for compatibility
+        return []
 
 
 class MockAWSProvider(BaseAWSProvider):
