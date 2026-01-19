@@ -11,10 +11,20 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List
 from unittest.mock import patch, MagicMock
 
-# Ensure mock providers for testing
+# Provider selection based on TEST_AWS_PROVIDER environment variable
+# Supports: mock (default), localstack, real
+_test_aws_provider = os.getenv("TEST_AWS_PROVIDER", "mock")
+
+# Set default providers based on TEST_AWS_PROVIDER
+if _test_aws_provider == "localstack":
+    os.environ.setdefault("AWS_PROVIDER", "localstack")
+    os.environ.setdefault("RDS_PROVIDER", "mock")  # RDS uses MySQL container
+else:
+    os.environ.setdefault("AWS_PROVIDER", "mock")
+    os.environ.setdefault("RDS_PROVIDER", "mock")
+
+# LLM always uses mock for tests
 os.environ.setdefault("LLM_PROVIDER", "mock")
-os.environ.setdefault("AWS_PROVIDER", "mock")
-os.environ.setdefault("RDS_PROVIDER", "mock")
 
 
 # ============================================================================
@@ -375,3 +385,154 @@ def assert_detection_result():
             assert "anomaly_count" in result or "anomaly_record" in result or "anomaly_records" in result
 
     return _assert
+
+
+# ============================================================================
+# LocalStack Fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def localstack_bdp_handler(localstack_aws_client):
+    """Create BDP DetectionHandler configured for LocalStack.
+
+    Requires LocalStack to be running.
+    Uses localstack_aws_client fixture which handles availability check.
+    """
+    with patch.dict(
+        "os.environ",
+        {
+            "LLM_PROVIDER": "mock",
+            "AWS_PROVIDER": "localstack",
+            "RDS_PROVIDER": "mock",
+            "LOCALSTACK_ENDPOINT": os.getenv("LOCALSTACK_ENDPOINT", "http://localhost:4566"),
+        },
+    ):
+        from src.agents.bdp.handler import DetectionHandler
+
+        handler = DetectionHandler()
+        # Replace the AWS client with the LocalStack client
+        handler.aws_client = localstack_aws_client
+        return handler
+
+
+@pytest.fixture
+def inject_cpu_spike_scenario(localstack_aws_client, localstack_endpoint):
+    """Inject high CPU spike scenario into LocalStack.
+
+    Returns metadata about the injected scenario.
+    """
+    import subprocess
+
+    scenario_script = "localstack/scenarios/high-cpu-spike.sh"
+    env = os.environ.copy()
+    env["LOCALSTACK_ENDPOINT"] = localstack_endpoint
+
+    try:
+        subprocess.run(
+            ["bash", scenario_script, "test-function"],
+            env=env,
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+        pytest.skip(f"Failed to inject CPU spike scenario: {e}")
+
+    return {
+        "function_name": "test-function",
+        "expected_metric": "CPUUtilization",
+        "expected_spike_value": 95,
+        "expected_z_score_min": 2.0,
+    }
+
+
+@pytest.fixture
+def inject_error_flood_scenario(localstack_aws_client, localstack_endpoint):
+    """Inject error flood scenario into LocalStack.
+
+    Returns metadata about the injected scenario.
+    """
+    import subprocess
+
+    scenario_script = "localstack/scenarios/error-flood.sh"
+    env = os.environ.copy()
+    env["LOCALSTACK_ENDPOINT"] = localstack_endpoint
+
+    try:
+        subprocess.run(
+            ["bash", scenario_script, "/aws/lambda/test-function"],
+            env=env,
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+        pytest.skip(f"Failed to inject error flood scenario: {e}")
+
+    return {
+        "log_group": "/aws/lambda/test-function",
+        "expected_error_count_min": 10,
+        "expected_severity": "high",
+    }
+
+
+@pytest.fixture
+def inject_auth_failure_scenario(localstack_aws_client, localstack_endpoint):
+    """Inject authentication failure scenario into LocalStack.
+
+    Returns metadata about the injected scenario.
+    """
+    import subprocess
+
+    scenario_script = "localstack/scenarios/auth-failure.sh"
+    env = os.environ.copy()
+    env["LOCALSTACK_ENDPOINT"] = localstack_endpoint
+
+    try:
+        subprocess.run(
+            ["bash", scenario_script, "/aws/lambda/auth-service"],
+            env=env,
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+        pytest.skip(f"Failed to inject auth failure scenario: {e}")
+
+    return {
+        "log_group": "/aws/lambda/auth-service",
+        "expected_pattern_type": "auth_failure",
+        "expected_severity": "critical",
+        "expected_match_count_min": 5,
+    }
+
+
+@pytest.fixture
+def inject_db_timeout_scenario(localstack_aws_client, localstack_endpoint):
+    """Inject database timeout scenario into LocalStack.
+
+    Returns metadata about the injected scenario.
+    """
+    import subprocess
+
+    scenario_script = "localstack/scenarios/db-timeout.sh"
+    env = os.environ.copy()
+    env["LOCALSTACK_ENDPOINT"] = localstack_endpoint
+
+    try:
+        subprocess.run(
+            ["bash", scenario_script, "/aws/lambda/data-processor"],
+            env=env,
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+        pytest.skip(f"Failed to inject db timeout scenario: {e}")
+
+    return {
+        "log_group": "/aws/lambda/data-processor",
+        "expected_pattern_types": ["timeout", "resource_exhaustion"],
+        "expected_severity": "critical",
+    }

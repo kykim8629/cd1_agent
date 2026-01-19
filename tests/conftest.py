@@ -261,3 +261,84 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "slow: Slow running tests")
     config.addinivalue_line("markers", "llm: Tests requiring LLM")
     config.addinivalue_line("markers", "aws: Tests requiring AWS services")
+    config.addinivalue_line("markers", "localstack: Tests requiring LocalStack")
+
+
+# ============================================================================
+# LocalStack Fixtures
+# ============================================================================
+
+
+@pytest.fixture(scope="session")
+def localstack_endpoint() -> str:
+    """Get LocalStack endpoint URL."""
+    return os.getenv("LOCALSTACK_ENDPOINT", "http://localhost:4566")
+
+
+@pytest.fixture(scope="session")
+def localstack_available(localstack_endpoint: str) -> bool:
+    """Check if LocalStack is available and healthy.
+
+    Returns True if LocalStack is running and healthy, False otherwise.
+    """
+    import urllib.request
+    import urllib.error
+
+    try:
+        health_url = f"{localstack_endpoint}/_localstack/health"
+        with urllib.request.urlopen(health_url, timeout=5) as response:
+            return response.status == 200
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+        return False
+
+
+@pytest.fixture
+def skip_without_localstack(localstack_available: bool):
+    """Skip test if LocalStack is not available."""
+    if not localstack_available:
+        pytest.skip("LocalStack is not available")
+
+
+@pytest.fixture
+def localstack_aws_client(localstack_available: bool, localstack_endpoint: str):
+    """Create AWS client configured for LocalStack.
+
+    Automatically skips if LocalStack is not available.
+    """
+    if not localstack_available:
+        pytest.skip("LocalStack is not available")
+
+    from src.common.services.aws_client import AWSClient, AWSProvider
+
+    # Set endpoint URL environment variable
+    os.environ["LOCALSTACK_ENDPOINT"] = localstack_endpoint
+
+    return AWSClient(provider=AWSProvider.LOCALSTACK)
+
+
+@pytest.fixture
+def localstack_mysql_connection(localstack_available: bool):
+    """Create MySQL connection for LocalStack MySQL container.
+
+    Automatically skips if LocalStack is not available or MySQL is not accessible.
+    """
+    if not localstack_available:
+        pytest.skip("LocalStack is not available")
+
+    try:
+        import pymysql
+
+        connection = pymysql.connect(
+            host=os.getenv("MYSQL_HOST", "localhost"),
+            port=int(os.getenv("MYSQL_PORT", "3306")),
+            user=os.getenv("MYSQL_USER", "cd1_user"),
+            password=os.getenv("MYSQL_PASSWORD", "cd1_password"),
+            database=os.getenv("MYSQL_DATABASE", "cd1_agent"),
+            connect_timeout=5,
+        )
+        yield connection
+        connection.close()
+    except ImportError:
+        pytest.skip("pymysql not installed")
+    except Exception as e:
+        pytest.skip(f"MySQL connection failed: {e}")

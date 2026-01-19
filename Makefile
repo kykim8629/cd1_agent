@@ -96,3 +96,85 @@ docker-test:
 run-mock:
 	AWS_PROVIDER=mock LLM_PROVIDER=mock RDS_PROVIDER=mock \
 		python -c "from src.agents.bdp.handler import handler; print(handler({'detection_type': 'scheduled'}, None))"
+
+# ============================================================================
+# LocalStack Integration
+# ============================================================================
+
+.PHONY: localstack-up localstack-down localstack-test localstack-logs localstack-status
+.PHONY: scenario-cpu-spike scenario-error-flood scenario-auth-failure scenario-db-timeout
+
+# LocalStack environment management
+localstack-up:
+	@echo "=== Starting LocalStack environment ==="
+	docker-compose -f docker-compose.localstack.yml up -d
+	@echo "Waiting for LocalStack to be healthy..."
+	@timeout 60 bash -c 'until curl -s http://localhost:4566/_localstack/health | grep -q "running"; do sleep 2; done' || (echo "LocalStack failed to start" && exit 1)
+	@echo "Waiting for MySQL to be healthy..."
+	@timeout 60 bash -c 'until docker-compose -f docker-compose.localstack.yml exec -T mysql mysqladmin ping -h localhost -u root -plocalstack 2>/dev/null; do sleep 2; done' || (echo "MySQL failed to start" && exit 1)
+	@echo "=== LocalStack environment ready ==="
+
+localstack-down:
+	@echo "=== Stopping LocalStack environment ==="
+	docker-compose -f docker-compose.localstack.yml down -v
+	@echo "=== LocalStack environment stopped ==="
+
+localstack-logs:
+	docker-compose -f docker-compose.localstack.yml logs -f
+
+localstack-status:
+	@echo "=== LocalStack Status ==="
+	@curl -s http://localhost:4566/_localstack/health | python3 -m json.tool 2>/dev/null || echo "LocalStack not running"
+	@echo ""
+	@echo "=== MySQL Status ==="
+	@docker-compose -f docker-compose.localstack.yml exec -T mysql mysqladmin status -h localhost -u root -plocalstack 2>/dev/null || echo "MySQL not running"
+
+# Run tests against LocalStack
+localstack-test:
+	@echo "=== Running tests against LocalStack ==="
+	TEST_AWS_PROVIDER=localstack LOCALSTACK_ENDPOINT=http://localhost:4566 \
+		pytest tests/agents/bdp/test_localstack_scenarios.py -v -m localstack
+
+localstack-test-all:
+	@echo "=== Running all BDP tests against LocalStack ==="
+	TEST_AWS_PROVIDER=localstack LOCALSTACK_ENDPOINT=http://localhost:4566 \
+		pytest tests/agents/bdp/ -v
+
+# Failure scenario injection
+scenario-cpu-spike:
+	@echo "=== Injecting CPU Spike Scenario ==="
+	LOCALSTACK_ENDPOINT=http://localhost:4566 ./localstack/scenarios/high-cpu-spike.sh test-function
+
+scenario-error-flood:
+	@echo "=== Injecting Error Flood Scenario ==="
+	LOCALSTACK_ENDPOINT=http://localhost:4566 ./localstack/scenarios/error-flood.sh /aws/lambda/test-function
+
+scenario-auth-failure:
+	@echo "=== Injecting Auth Failure Scenario ==="
+	LOCALSTACK_ENDPOINT=http://localhost:4566 MYSQL_HOST=localhost ./localstack/scenarios/auth-failure.sh /aws/lambda/auth-service
+
+scenario-db-timeout:
+	@echo "=== Injecting DB Timeout Scenario ==="
+	LOCALSTACK_ENDPOINT=http://localhost:4566 MYSQL_HOST=localhost ./localstack/scenarios/db-timeout.sh /aws/lambda/data-processor
+
+# Quick verification commands
+localstack-verify-metrics:
+	@echo "=== Verifying CloudWatch Metrics ==="
+	awslocal cloudwatch list-metrics --namespace AWS/Lambda --endpoint-url http://localhost:4566
+
+localstack-verify-logs:
+	@echo "=== Verifying CloudWatch Logs ==="
+	awslocal logs describe-log-groups --endpoint-url http://localhost:4566
+
+localstack-verify-dynamodb:
+	@echo "=== Verifying DynamoDB Tables ==="
+	awslocal dynamodb list-tables --endpoint-url http://localhost:4566
+
+localstack-verify-eventbridge:
+	@echo "=== Verifying EventBridge ==="
+	awslocal events list-event-buses --endpoint-url http://localhost:4566
+
+localstack-verify-mysql:
+	@echo "=== Verifying MySQL Patterns ==="
+	docker-compose -f docker-compose.localstack.yml exec -T mysql \
+		mysql -u cd1_user -pcd1_password cd1_agent -e "SELECT pattern_id, pattern_name, severity FROM detection_patterns;"

@@ -65,3 +65,7 @@ Thumbs.db
 # Schema directory (contains sensitive production schemas)
 # Each environment (public/private) maintains its own schema definitions
 schema/
+
+# LocalStack
+localstack/data/*
+!localstack/data/.gitkeep

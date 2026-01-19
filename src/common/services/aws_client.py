@@ -771,6 +771,8 @@ class AWSClient:
         """Create the appropriate provider instance."""
         if provider == AWSProvider.REAL:
             return RealAWSProvider(region=region)
+        elif provider == AWSProvider.LOCALSTACK:
+            return LocalStackAWSProvider(region=region)
         return MockAWSProvider(mock_data=mock_data)
 
     def get_cloudwatch_metrics(
