@@ -424,7 +424,7 @@ def inject_cpu_spike_scenario(localstack_aws_client, localstack_endpoint):
     """
     import subprocess
 
-    scenario_script = "localstack/scenarios/high-cpu-spike.sh"
+    scenario_script = "infra/bdp_agent/scenarios/high-cpu-spike.sh"
     env = os.environ.copy()
     env["LOCALSTACK_ENDPOINT"] = localstack_endpoint
 
@@ -455,7 +455,7 @@ def inject_error_flood_scenario(localstack_aws_client, localstack_endpoint):
     """
     import subprocess
 
-    scenario_script = "localstack/scenarios/error-flood.sh"
+    scenario_script = "infra/bdp_agent/scenarios/error-flood.sh"
     env = os.environ.copy()
     env["LOCALSTACK_ENDPOINT"] = localstack_endpoint
 
@@ -485,7 +485,7 @@ def inject_auth_failure_scenario(localstack_aws_client, localstack_endpoint):
     """
     import subprocess
 
-    scenario_script = "localstack/scenarios/auth-failure.sh"
+    scenario_script = "infra/bdp_agent/scenarios/auth-failure.sh"
     env = os.environ.copy()
     env["LOCALSTACK_ENDPOINT"] = localstack_endpoint
 
@@ -516,7 +516,7 @@ def inject_db_timeout_scenario(localstack_aws_client, localstack_endpoint):
     """
     import subprocess
 
-    scenario_script = "localstack/scenarios/db-timeout.sh"
+    scenario_script = "infra/bdp_agent/scenarios/db-timeout.sh"
     env = os.environ.copy()
     env["LOCALSTACK_ENDPOINT"] = localstack_endpoint
 

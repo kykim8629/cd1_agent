@@ -1,0 +1,50 @@
+version: "3.8"
+
+# HDSP Agent Prometheus Test Environment
+# Provides Prometheus + Pushgateway for K8s metric simulation
+#
+# Usage:
+#   make hdsp-up     # Start environment
+#   make hdsp-down   # Stop environment
+#   make hdsp-test   # Run integration tests
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: cd1-hdsp-prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=1h'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    volumes:
+      - "./prometheus.yml:/etc/prometheus/prometheus.yml:ro"
+    networks:
+      - cd1-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  pushgateway:
+    image: prom/pushgateway:v1.6.2
+    container_name: cd1-hdsp-pushgateway
+    ports:
+      - "9091:9091"
+    networks:
+      - cd1-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9091/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  cd1-network:
+    name: cd1-agent_cd1-network
+    driver: bridge

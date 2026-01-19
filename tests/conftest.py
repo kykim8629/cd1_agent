@@ -262,6 +262,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "llm: Tests requiring LLM")
     config.addinivalue_line("markers", "aws: Tests requiring AWS services")
     config.addinivalue_line("markers", "localstack: Tests requiring LocalStack")
+    config.addinivalue_line("markers", "prometheus: Tests requiring Prometheus/Pushgateway")
 
 
 # ============================================================================

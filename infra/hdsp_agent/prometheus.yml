@@ -1,0 +1,21 @@
+# Prometheus Configuration for HDSP Agent Testing
+#
+# Scrapes metrics from Pushgateway where test scenarios inject
+# simulated K8s failure metrics.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Pushgateway scrape config
+  # honor_labels: true preserves namespace, pod, node labels from injected metrics
+  - job_name: 'pushgateway'
+    honor_labels: true
+    static_configs:
+      - targets: ['pushgateway:9091']
+
+  # Prometheus self-monitoring (optional, useful for debugging)
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

@@ -107,27 +107,27 @@ run-mock:
 # LocalStack environment management
 localstack-up:
 	@echo "=== Starting LocalStack environment ==="
-	docker-compose -f docker-compose.localstack.yml up -d
+	docker-compose -f infra/bdp_agent/docker-compose.yml up -d
 	@echo "Waiting for LocalStack to be healthy..."
 	@timeout 60 bash -c 'until curl -s http://localhost:4566/_localstack/health | grep -q "running"; do sleep 2; done' || (echo "LocalStack failed to start" && exit 1)
 	@echo "Waiting for MySQL to be healthy..."
-	@timeout 60 bash -c 'until docker-compose -f docker-compose.localstack.yml exec -T mysql mysqladmin ping -h localhost -u root -plocalstack 2>/dev/null; do sleep 2; done' || (echo "MySQL failed to start" && exit 1)
+	@timeout 60 bash -c 'until docker-compose -f infra/bdp_agent/docker-compose.yml exec -T mysql mysqladmin ping -h localhost -u root -plocalstack 2>/dev/null; do sleep 2; done' || (echo "MySQL failed to start" && exit 1)
 	@echo "=== LocalStack environment ready ==="
 
 localstack-down:
 	@echo "=== Stopping LocalStack environment ==="
-	docker-compose -f docker-compose.localstack.yml down -v
+	docker-compose -f infra/bdp_agent/docker-compose.yml down -v
 	@echo "=== LocalStack environment stopped ==="
 
 localstack-logs:
-	docker-compose -f docker-compose.localstack.yml logs -f
+	docker-compose -f infra/bdp_agent/docker-compose.yml logs -f
 
 localstack-status:
 	@echo "=== LocalStack Status ==="
 	@curl -s http://localhost:4566/_localstack/health | python3 -m json.tool 2>/dev/null || echo "LocalStack not running"
 	@echo ""
 	@echo "=== MySQL Status ==="
-	@docker-compose -f docker-compose.localstack.yml exec -T mysql mysqladmin status -h localhost -u root -plocalstack 2>/dev/null || echo "MySQL not running"
+	@docker-compose -f infra/bdp_agent/docker-compose.yml exec -T mysql mysqladmin status -h localhost -u root -plocalstack 2>/dev/null || echo "MySQL not running"
 
 # Run tests against LocalStack
 localstack-test:
@@ -143,19 +143,19 @@ localstack-test-all:
 # Failure scenario injection
 scenario-cpu-spike:
 	@echo "=== Injecting CPU Spike Scenario ==="
-	LOCALSTACK_ENDPOINT=http://localhost:4566 ./localstack/scenarios/high-cpu-spike.sh test-function
+	LOCALSTACK_ENDPOINT=http://localhost:4566 ./infra/bdp_agent/scenarios/high-cpu-spike.sh test-function
 
 scenario-error-flood:
 	@echo "=== Injecting Error Flood Scenario ==="
-	LOCALSTACK_ENDPOINT=http://localhost:4566 ./localstack/scenarios/error-flood.sh /aws/lambda/test-function
+	LOCALSTACK_ENDPOINT=http://localhost:4566 ./infra/bdp_agent/scenarios/error-flood.sh /aws/lambda/test-function
 
 scenario-auth-failure:
 	@echo "=== Injecting Auth Failure Scenario ==="
-	LOCALSTACK_ENDPOINT=http://localhost:4566 MYSQL_HOST=localhost ./localstack/scenarios/auth-failure.sh /aws/lambda/auth-service
+	LOCALSTACK_ENDPOINT=http://localhost:4566 MYSQL_HOST=localhost ./infra/bdp_agent/scenarios/auth-failure.sh /aws/lambda/auth-service
 
 scenario-db-timeout:
 	@echo "=== Injecting DB Timeout Scenario ==="
-	LOCALSTACK_ENDPOINT=http://localhost:4566 MYSQL_HOST=localhost ./localstack/scenarios/db-timeout.sh /aws/lambda/data-processor
+	LOCALSTACK_ENDPOINT=http://localhost:4566 MYSQL_HOST=localhost ./infra/bdp_agent/scenarios/db-timeout.sh /aws/lambda/data-processor
 
 # Quick verification commands
 localstack-verify-metrics:
@@ -176,5 +176,108 @@ localstack-verify-eventbridge:
 
 localstack-verify-mysql:
 	@echo "=== Verifying MySQL Patterns ==="
-	docker-compose -f docker-compose.localstack.yml exec -T mysql \
+	docker-compose -f infra/bdp_agent/docker-compose.yml exec -T mysql \
 		mysql -u cd1_user -pcd1_password cd1_agent -e "SELECT pattern_id, pattern_name, severity FROM detection_patterns;"
+
+# ============================================================================
+# HDSP Agent - Prometheus Test Environment
+# ============================================================================
+
+.PHONY: hdsp-up hdsp-down hdsp-test hdsp-logs hdsp-status
+.PHONY: hdsp-scenario-crash-loop hdsp-scenario-oom hdsp-scenario-node-pressure
+.PHONY: hdsp-scenario-high-cpu hdsp-scenario-high-memory hdsp-scenario-pod-restarts
+.PHONY: all-up all-down
+
+# HDSP environment management
+hdsp-up:
+	@echo "=== Starting HDSP Prometheus environment ==="
+	docker-compose -f infra/hdsp_agent/docker-compose.yml up -d
+	@echo "Waiting for Prometheus to be healthy..."
+	@timeout 60 bash -c 'until curl -s http://localhost:9090/-/healthy | grep -q "Prometheus Server is Healthy"; do sleep 2; done' || (echo "Prometheus failed to start" && exit 1)
+	@echo "Waiting for Pushgateway to be healthy..."
+	@timeout 60 bash -c 'until curl -s http://localhost:9091/-/healthy | grep -q "OK"; do sleep 2; done' || (echo "Pushgateway failed to start" && exit 1)
+	@echo "=== HDSP Prometheus environment ready ==="
+	@echo ""
+	@echo "Prometheus UI: http://localhost:9090"
+	@echo "Pushgateway UI: http://localhost:9091"
+
+hdsp-down:
+	@echo "=== Stopping HDSP Prometheus environment ==="
+	docker-compose -f infra/hdsp_agent/docker-compose.yml down -v
+	@echo "=== HDSP Prometheus environment stopped ==="
+
+hdsp-logs:
+	docker-compose -f infra/hdsp_agent/docker-compose.yml logs -f
+
+hdsp-status:
+	@echo "=== Prometheus Status ==="
+	@curl -s http://localhost:9090/-/healthy 2>/dev/null || echo "Prometheus not running"
+	@echo ""
+	@echo "=== Pushgateway Status ==="
+	@curl -s http://localhost:9091/-/healthy 2>/dev/null || echo "Pushgateway not running"
+	@echo ""
+	@echo "=== Pushgateway Metrics ==="
+	@curl -s http://localhost:9091/metrics 2>/dev/null | grep -E "^(kube_|container_)" | head -20 || echo "No K8s metrics injected"
+
+# Run HDSP integration tests
+hdsp-test:
+	@echo "=== Running HDSP Prometheus integration tests ==="
+	TEST_PROMETHEUS_PROVIDER=real PROMETHEUS_URL=http://localhost:9090 PUSHGATEWAY_URL=http://localhost:9091 \
+		pytest tests/agents/hdsp/test_prometheus_integration.py -v -m prometheus
+
+hdsp-test-all:
+	@echo "=== Running all HDSP tests ==="
+	PROMETHEUS_MOCK=true pytest tests/agents/hdsp/ -v
+
+# Scenario injection commands
+hdsp-scenario-crash-loop:
+	@echo "=== Injecting CrashLoopBackOff Scenario ==="
+	PUSHGATEWAY_URL=http://localhost:9091 ./infra/hdsp_agent/scenarios/crash-loop-backoff.sh spark test-crash-loop-pod
+
+hdsp-scenario-oom:
+	@echo "=== Injecting OOMKilled Scenario ==="
+	PUSHGATEWAY_URL=http://localhost:9091 ./infra/hdsp_agent/scenarios/oom-killed.sh hdsp test-oom-pod
+
+hdsp-scenario-node-pressure:
+	@echo "=== Injecting Node Pressure Scenario ==="
+	PUSHGATEWAY_URL=http://localhost:9091 ./infra/hdsp_agent/scenarios/node-pressure.sh worker-node-1 MemoryPressure
+
+hdsp-scenario-high-cpu:
+	@echo "=== Injecting High CPU Scenario ==="
+	PUSHGATEWAY_URL=http://localhost:9091 ./infra/hdsp_agent/scenarios/high-cpu.sh default high-cpu-pod
+
+hdsp-scenario-high-memory:
+	@echo "=== Injecting High Memory Scenario ==="
+	PUSHGATEWAY_URL=http://localhost:9091 ./infra/hdsp_agent/scenarios/high-memory.sh hdsp high-memory-pod
+
+hdsp-scenario-pod-restarts:
+	@echo "=== Injecting Pod Restarts Scenario ==="
+	PUSHGATEWAY_URL=http://localhost:9091 ./infra/hdsp_agent/scenarios/pod-restarts.sh spark unstable-pod
+
+# Verification commands
+hdsp-verify-metrics:
+	@echo "=== Verifying Prometheus Metrics ==="
+	@echo "--- CrashLoopBackOff Pods ---"
+	@curl -s 'http://localhost:9090/api/v1/query?query=kube_pod_container_status_waiting_reason' | python3 -m json.tool 2>/dev/null | head -30 || echo "Query failed"
+	@echo ""
+	@echo "--- OOMKilled Pods ---"
+	@curl -s 'http://localhost:9090/api/v1/query?query=kube_pod_container_status_last_terminated_reason' | python3 -m json.tool 2>/dev/null | head -30 || echo "Query failed"
+	@echo ""
+	@echo "--- Node Conditions ---"
+	@curl -s 'http://localhost:9090/api/v1/query?query=kube_node_status_condition{status="true"}' | python3 -m json.tool 2>/dev/null | head -30 || echo "Query failed"
+
+hdsp-clear-metrics:
+	@echo "=== Clearing all Pushgateway metrics ==="
+	@curl -X DELETE http://localhost:9091/metrics/job/kube-state-metrics 2>/dev/null || true
+	@curl -X DELETE http://localhost:9091/metrics/job/cadvisor 2>/dev/null || true
+	@echo "Metrics cleared"
+
+# Combined environment commands
+all-up: localstack-up hdsp-up
+	@echo "=== All test environments ready ==="
+	@echo "LocalStack: http://localhost:4566"
+	@echo "Prometheus: http://localhost:9090"
+	@echo "Pushgateway: http://localhost:9091"
+
+all-down: localstack-down hdsp-down
+	@echo "=== All test environments stopped ==="

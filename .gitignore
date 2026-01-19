@@ -66,6 +66,6 @@ Thumbs.db
 # Each environment (public/private) maintains its own schema definitions
 schema/
 
-# LocalStack
-localstack/data/*
-!localstack/data/.gitkeep
+# LocalStack (BDP Agent)
+infra/bdp_agent/data/*
+!infra/bdp_agent/data/.gitkeep

@@ -23,8 +23,8 @@ services:
       - DOCKER_HOST=unix:///var/run/docker.sock
       - AWS_DEFAULT_REGION=ap-northeast-2
     volumes:
-      - "./localstack/init-scripts:/etc/localstack/init/ready.d"
-      - "./localstack/data:/var/lib/localstack"
+      - "./init-scripts:/etc/localstack/init/ready.d"
+      - "./data:/var/lib/localstack"
       - "/var/run/docker.sock:/var/run/docker.sock"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
@@ -46,7 +46,7 @@ services:
       - MYSQL_USER=cd1_user
       - MYSQL_PASSWORD=cd1_password
     volumes:
-      - "./localstack/mysql-init:/docker-entrypoint-initdb.d"
+      - "./mysql-init:/docker-entrypoint-initdb.d"
       - "mysql-data:/var/lib/mysql"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-plocalstack"]
