@@ -66,6 +66,10 @@ Thumbs.db
 # Each environment (public/private) maintains its own schema definitions
 schema/
 
+# Lambda layer build temp
+.layer_build/
+layer/
+
 # LocalStack (BDP Agent)
 infra/bdp_agent/data/*
 !infra/bdp_agent/data/.gitkeep
