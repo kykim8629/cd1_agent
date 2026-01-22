@@ -1,7 +1,7 @@
 """
 BDP Compact Agent HTTP Server.
 
-FastAPI server for BDP Compact Agent - Multi-Account Cost Drift Detection
+FastAPI server for BDP Compact Agent - Cost Drift Detection
 (port 8005).
 """
 
@@ -202,29 +202,16 @@ def create_detection_router() -> APIRouter:
         }
 
     @router.get(
-        "/accounts",
-        summary="설정된 계정 목록 조회",
-        description="비용 탐지 대상으로 설정된 AWS 계정 목록을 조회합니다.",
+        "/account",
+        summary="현재 계정 정보 조회",
+        description="현재 Lambda가 실행 중인 AWS 계정 정보를 조회합니다.",
     )
-    async def get_accounts() -> Dict[str, Any]:
-        """설정된 계정 목록 조회."""
-        from src.agents.bdp_compact.services.multi_account_provider import create_provider
+    async def get_account() -> Dict[str, Any]:
+        """현재 계정 정보 조회."""
+        from src.agents.bdp_compact.services.cost_explorer_provider import create_provider
 
         provider = create_provider()
-        accounts = provider.get_accounts()
-
-        return {
-            "accounts": [
-                {
-                    "account_id": acc.account_id,
-                    "account_name": acc.account_name,
-                    "has_role_arn": acc.role_arn is not None,
-                    "region": acc.region,
-                }
-                for acc in accounts
-            ],
-            "total": len(accounts),
-        }
+        return provider.get_account_info()
 
     return router
 
@@ -234,7 +221,7 @@ def create_bdp_compact_app() -> FastAPI:
     app = create_app(
         agent_name="bdp-compact",
         title="CD1 BDP Compact Agent",
-        description="Multi-Account 비용 드리프트 탐지 서비스 (PyOD ECOD 기반)",
+        description="비용 드리프트 탐지 서비스 (PyOD ECOD 기반)",
         lifespan=lifespan,
     )
 

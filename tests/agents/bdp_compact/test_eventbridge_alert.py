@@ -13,7 +13,7 @@ from src.agents.bdp_compact.services.anomaly_detector import (
 from src.agents.bdp_compact.services.event_publisher import (
     LocalStackEventPublisher,
 )
-from src.agents.bdp_compact.services.multi_account_provider import ServiceCostData
+from src.agents.bdp_compact.services.cost_explorer_provider import ServiceCostData
 from src.agents.bdp_compact.services.summary_generator import SummaryGenerator
 
 

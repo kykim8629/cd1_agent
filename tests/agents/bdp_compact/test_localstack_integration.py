@@ -26,16 +26,17 @@ class TestBDPCompactLocalStackIntegration:
         if not bdp_tables_created:
             pytest.skip("BDP tables not created")
 
-        from src.agents.bdp_compact.services.multi_account_provider import (
-            LocalStackMultiAccountProvider,
+        from src.agents.bdp_compact.services.cost_explorer_provider import (
+            LocalStackCostExplorerProvider,
         )
 
-        provider = LocalStackMultiAccountProvider(
+        provider = LocalStackCostExplorerProvider(
             endpoint_url=bdp_localstack_endpoint,
         )
 
-        accounts = provider.get_accounts()
-        assert len(accounts) >= 1
+        account_info = provider.get_account_info()
+        assert account_info["account_id"]
+        assert account_info["account_name"]
 
     def test_localstack_cost_data_retrieval(
         self,
@@ -54,23 +55,21 @@ class TestBDPCompactLocalStackIntegration:
         if not inject_bdp_baseline:
             pytest.skip("Baseline data not injected")
 
-        from src.agents.bdp_compact.services.multi_account_provider import (
-            LocalStackMultiAccountProvider,
+        from src.agents.bdp_compact.services.cost_explorer_provider import (
+            LocalStackCostExplorerProvider,
         )
 
-        provider = LocalStackMultiAccountProvider(
+        provider = LocalStackCostExplorerProvider(
             endpoint_url=bdp_localstack_endpoint,
         )
 
         cost_data = provider.get_cost_data(days=14)
 
         assert len(cost_data) >= 1
-        for account_id, services in cost_data.items():
-            assert len(services) >= 1
-            for service in services:
-                assert service.service_name
-                assert service.account_id
-                assert len(service.historical_costs) >= 1
+        for service in cost_data:
+            assert service.service_name
+            assert service.account_id
+            assert len(service.historical_costs) >= 1
 
     def test_eventbridge_event_publishing(
         self,
@@ -128,7 +127,7 @@ class TestBDPCompactLocalStackIntegration:
 
         data = body["data"]
         assert data["detection_type"] == "cost_drift"
-        assert data["accounts_analyzed"] >= 1
+        assert data["accounts_analyzed"] == 1  # Single account architecture
         assert data["services_analyzed"] >= 1
         assert isinstance(data["severity_breakdown"], dict)
 
@@ -160,7 +159,7 @@ class TestBDPCompactLocalStackIntegration:
                 "pk": {"S": "ACCOUNT#111111111111#SERVICE#Amazon Athena"},
                 "sk": {"S": f"DATE#{today}"},
                 "account_id": {"S": "111111111111"},
-                "account_name": {"S": "hyundaicard-payer"},
+                "account_name": {"S": "test-account"},
                 "service_name": {"S": "Amazon Athena"},
                 "cost": {"N": "580000"},  # 스파이크
                 "currency": {"S": "KRW"},
@@ -203,62 +202,65 @@ class TestBDPCompactLocalStackIntegration:
 
 
 @pytest.mark.localstack
-class TestMultiAccountScenarios:
-    """Multi-Account 시나리오 테스트."""
+class TestSingleAccountScenarios:
+    """Single-Account 시나리오 테스트."""
 
-    def test_multi_account_detection(
+    def test_single_account_detection(
         self,
         localstack_available,
         bdp_localstack_endpoint,
         bdp_tables_created,
         inject_bdp_baseline,
     ):
-        """복수 계정 탐지 테스트."""
+        """단일 계정 탐지 테스트."""
         if not all([localstack_available, bdp_tables_created, inject_bdp_baseline]):
             pytest.skip("Prerequisites not met")
 
-        from src.agents.bdp_compact.services.multi_account_provider import (
-            LocalStackMultiAccountProvider,
+        from src.agents.bdp_compact.services.cost_explorer_provider import (
+            LocalStackCostExplorerProvider,
         )
 
-        provider = LocalStackMultiAccountProvider(
+        provider = LocalStackCostExplorerProvider(
             endpoint_url=bdp_localstack_endpoint,
         )
 
         cost_data = provider.get_cost_data(days=14)
 
-        # 두 계정 모두에서 데이터 조회
-        account_ids = list(cost_data.keys())
-        assert len(account_ids) >= 1
+        # 서비스 데이터 존재
+        assert len(cost_data) >= 1
+        for service in cost_data:
+            assert service.service_name
+            assert service.account_id
+            assert service.account_name
 
-        # 각 계정에 서비스 데이터 존재
-        for account_id, services in cost_data.items():
-            assert len(services) >= 1, f"Account {account_id} should have services"
-
-    def test_cross_account_summary(
+    def test_account_summary(
         self,
         localstack_available,
         bdp_localstack_endpoint,
         bdp_tables_created,
         inject_bdp_baseline,
     ):
-        """크로스 계정 요약 테스트."""
+        """계정 요약 테스트."""
         if not all([localstack_available, bdp_tables_created, inject_bdp_baseline]):
             pytest.skip("Prerequisites not met")
 
         from src.agents.bdp_compact.services.anomaly_detector import CostDriftDetector
-        from src.agents.bdp_compact.services.multi_account_provider import (
-            LocalStackMultiAccountProvider,
+        from src.agents.bdp_compact.services.cost_explorer_provider import (
+            LocalStackCostExplorerProvider,
         )
         from src.agents.bdp_compact.services.summary_generator import SummaryGenerator
 
-        provider = LocalStackMultiAccountProvider(
+        provider = LocalStackCostExplorerProvider(
             endpoint_url=bdp_localstack_endpoint,
         )
         detector = CostDriftDetector()
         generator = SummaryGenerator(currency="KRW")
 
-        cost_data = provider.get_cost_data(days=14)
+        cost_data_list = provider.get_cost_data(days=14)
+
+        # Detector expects Dict[str, List] format
+        account_info = provider.get_account_info()
+        cost_data = {account_info["account_id"]: cost_data_list}
         results = detector.analyze_batch(cost_data)
 
         # 일괄 요약 생성

@@ -83,76 +83,66 @@ def skip_without_bdp_tables(bdp_tables_created: bool):
 
 
 @pytest.fixture
-def mock_account_configs():
-    """Mock 계정 설정."""
-    from src.agents.bdp_compact.services.multi_account_provider import AccountConfig
-
-    return [
-        AccountConfig(
-            account_id="111111111111",
-            account_name="test-payer",
-        ),
-        AccountConfig(
-            account_id="222222222222",
-            account_name="test-member",
-        ),
-    ]
+def mock_account_id():
+    """Mock 계정 ID."""
+    return "111111111111"
 
 
 @pytest.fixture
-def mock_service_cost_data(mock_account_configs):
+def mock_account_name():
+    """Mock 계정 이름."""
+    return "test-account"
+
+
+@pytest.fixture
+def mock_service_cost_data(mock_account_id, mock_account_name):
     """Mock 서비스 비용 데이터."""
-    from src.agents.bdp_compact.services.multi_account_provider import ServiceCostData
+    from src.agents.bdp_compact.services.cost_explorer_provider import ServiceCostData
 
     end_date = datetime.utcnow()
     days = 14
 
-    result: Dict[str, List[ServiceCostData]] = {}
+    services: List[ServiceCostData] = []
 
-    for account in mock_account_configs:
-        services = []
-
-        # Athena - 정상 패턴
-        athena_costs = [250000 + (i * 1000) for i in range(days)]
-        athena_timestamps = [
-            (end_date - timedelta(days=days - i - 1)).strftime("%Y-%m-%d")
-            for i in range(days)
-        ]
-        services.append(
-            ServiceCostData(
-                service_name="Amazon Athena",
-                account_id=account.account_id,
-                account_name=account.account_name,
-                current_cost=athena_costs[-1],
-                historical_costs=athena_costs,
-                timestamps=athena_timestamps,
-                currency="KRW",
-            )
+    # Athena - 정상 패턴
+    athena_costs = [250000 + (i * 1000) for i in range(days)]
+    athena_timestamps = [
+        (end_date - timedelta(days=days - i - 1)).strftime("%Y-%m-%d")
+        for i in range(days)
+    ]
+    services.append(
+        ServiceCostData(
+            service_name="Amazon Athena",
+            account_id=mock_account_id,
+            account_name=mock_account_name,
+            current_cost=athena_costs[-1],
+            historical_costs=athena_costs,
+            timestamps=athena_timestamps,
+            currency="KRW",
         )
+    )
 
-        # Lambda - 정상 패턴
-        lambda_costs = [80000 + (i % 5) * 2000 for i in range(days)]
-        services.append(
-            ServiceCostData(
-                service_name="AWS Lambda",
-                account_id=account.account_id,
-                account_name=account.account_name,
-                current_cost=lambda_costs[-1],
-                historical_costs=lambda_costs,
-                timestamps=athena_timestamps,
-                currency="KRW",
-            )
+    # Lambda - 정상 패턴
+    lambda_costs = [80000 + (i % 5) * 2000 for i in range(days)]
+    services.append(
+        ServiceCostData(
+            service_name="AWS Lambda",
+            account_id=mock_account_id,
+            account_name=mock_account_name,
+            current_cost=lambda_costs[-1],
+            historical_costs=lambda_costs,
+            timestamps=athena_timestamps,
+            currency="KRW",
         )
+    )
 
-        result[account.account_id] = services
-
-    return result
+    return services
 
 
 @pytest.fixture
-def mock_spike_data(mock_account_configs):
+def mock_spike_data(mock_account_id, mock_account_name):
     """스파이크가 포함된 Mock 데이터."""
-    from src.agents.bdp_compact.services.multi_account_provider import ServiceCostData
+    from src.agents.bdp_compact.services.cost_explorer_provider import ServiceCostData
 
     end_date = datetime.utcnow()
     days = 14
@@ -164,19 +154,17 @@ def mock_spike_data(mock_account_configs):
     # Athena - 마지막 3일 스파이크
     athena_costs = [250000] * 11 + [350000, 450000, 580000]
 
-    return {
-        mock_account_configs[0].account_id: [
-            ServiceCostData(
-                service_name="Amazon Athena",
-                account_id=mock_account_configs[0].account_id,
-                account_name=mock_account_configs[0].account_name,
-                current_cost=580000,
-                historical_costs=athena_costs,
-                timestamps=timestamps,
-                currency="KRW",
-            )
-        ]
-    }
+    return [
+        ServiceCostData(
+            service_name="Amazon Athena",
+            account_id=mock_account_id,
+            account_name=mock_account_name,
+            current_cost=580000,
+            historical_costs=athena_costs,
+            timestamps=timestamps,
+            currency="KRW",
+        )
+    ]
 
 
 # ============================================================================
@@ -185,23 +173,25 @@ def mock_spike_data(mock_account_configs):
 
 
 @pytest.fixture
-def mock_provider(mock_service_cost_data, mock_account_configs):
-    """Mock Multi-Account Provider."""
-    from src.agents.bdp_compact.services.multi_account_provider import MockMultiAccountProvider
+def mock_provider(mock_service_cost_data, mock_account_id, mock_account_name):
+    """Mock Cost Explorer Provider."""
+    from src.agents.bdp_compact.services.cost_explorer_provider import MockCostExplorerProvider
 
-    return MockMultiAccountProvider(
-        accounts=mock_account_configs,
+    return MockCostExplorerProvider(
+        account_id=mock_account_id,
+        account_name=mock_account_name,
         mock_data=mock_service_cost_data,
     )
 
 
 @pytest.fixture
-def mock_spike_provider(mock_spike_data, mock_account_configs):
+def mock_spike_provider(mock_spike_data, mock_account_id, mock_account_name):
     """스파이크 데이터가 포함된 Mock Provider."""
-    from src.agents.bdp_compact.services.multi_account_provider import MockMultiAccountProvider
+    from src.agents.bdp_compact.services.cost_explorer_provider import MockCostExplorerProvider
 
-    return MockMultiAccountProvider(
-        accounts=mock_account_configs[:1],
+    return MockCostExplorerProvider(
+        account_id=mock_account_id,
+        account_name=mock_account_name,
         mock_data=mock_spike_data,
     )
 
@@ -309,37 +299,35 @@ def inject_bdp_baseline(
         ("Amazon S3", 120000, 8),
     ]
 
-    accounts = [
-        ("111111111111", "hyundaicard-payer"),
-        ("222222222222", "hyundaicard-member"),
-    ]
+    # Single account architecture - only one account
+    account_id = "111111111111"
+    account_name = "test-account"
 
     now = datetime.utcnow()
 
     try:
-        for account_id, account_name in accounts:
-            for service_name, base_cost, variance_pct in services:
-                for day in range(14):
-                    date = now - timedelta(days=day)
-                    date_str = date.strftime("%Y-%m-%d")
+        for service_name, base_cost, variance_pct in services:
+            for day in range(14):
+                date = now - timedelta(days=day)
+                date_str = date.strftime("%Y-%m-%d")
 
-                    import random
-                    variance = base_cost * variance_pct / 100
-                    cost = base_cost + random.uniform(-variance, variance)
+                import random
+                variance = base_cost * variance_pct / 100
+                cost = base_cost + random.uniform(-variance, variance)
 
-                    dynamodb.put_item(
-                        TableName="bdp-cost-history",
-                        Item={
-                            "pk": {"S": f"ACCOUNT#{account_id}#SERVICE#{service_name}"},
-                            "sk": {"S": f"DATE#{date_str}"},
-                            "account_id": {"S": account_id},
-                            "account_name": {"S": account_name},
-                            "service_name": {"S": service_name},
-                            "cost": {"N": str(round(cost, 2))},
-                            "currency": {"S": "KRW"},
-                            "timestamp": {"S": f"{date_str}T23:59:59Z"},
-                        },
-                    )
+                dynamodb.put_item(
+                    TableName="bdp-cost-history",
+                    Item={
+                        "pk": {"S": f"ACCOUNT#{account_id}#SERVICE#{service_name}"},
+                        "sk": {"S": f"DATE#{date_str}"},
+                        "account_id": {"S": account_id},
+                        "account_name": {"S": account_name},
+                        "service_name": {"S": service_name},
+                        "cost": {"N": str(round(cost, 2))},
+                        "currency": {"S": "KRW"},
+                        "timestamp": {"S": f"{date_str}T23:59:59Z"},
+                    },
+                )
 
         yield True
     except Exception:

@@ -15,7 +15,7 @@ from src.agents.bdp_compact.services.anomaly_detector import (
     Severity,
     _numpy_skew,
 )
-from src.agents.bdp_compact.services.multi_account_provider import ServiceCostData
+from src.agents.bdp_compact.services.cost_explorer_provider import ServiceCostData
 
 
 class TestCostDriftDetector:

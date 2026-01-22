@@ -1,7 +1,7 @@
 """
-BDP Compact Handler for Multi-Account Cost Drift Detection.
+BDP Compact Handler for Cost Drift Detection.
 
-Lambda/FastAPI 핸들러 - Multi-Account Cost Explorer 기반 비용 드리프트 탐지
+Lambda/FastAPI 핸들러 - Cost Explorer 기반 비용 드리프트 탐지
 및 KakaoTalk 알람 발송.
 """
 
@@ -24,9 +24,9 @@ from src.agents.bdp_compact.services.anomaly_detector import (
     Severity,
 )
 from src.agents.bdp_compact.services.event_publisher import EventPublisher
-from src.agents.bdp_compact.services.multi_account_provider import (
+from src.agents.bdp_compact.services.cost_explorer_provider import (
     create_provider,
-    BaseMultiAccountProvider,
+    BaseCostExplorerProvider,
 )
 from src.agents.bdp_compact.services.summary_generator import SummaryGenerator
 
@@ -35,11 +35,11 @@ class BDPCompactHandler(BaseHandler):
     """
     BDP Compact 비용 드리프트 탐지 핸들러.
 
-    Multi-Account Cost Explorer 데이터를 분석하여 비용 드리프트를 탐지하고,
+    Cost Explorer 데이터를 분석하여 비용 드리프트를 탐지하고,
     EventBridge를 통해 KakaoTalk 알람을 발송합니다.
 
     Features:
-    - Multi-Account Cost Explorer 접근 (STS AssumeRole)
+    - Cost Explorer 접근 (Lambda 실행 역할 권한 사용)
     - PyOD ECOD 기반 이상 탐지
     - 한글 Rich Summary 생성
     - EventBridge → KakaoTalk 알람
@@ -54,7 +54,7 @@ class BDPCompactHandler(BaseHandler):
         """서비스 컴포넌트 초기화."""
         # Provider 설정
         provider_type = os.getenv("BDP_PROVIDER", "mock")
-        self.provider: BaseMultiAccountProvider = create_provider(
+        self.provider: BaseCostExplorerProvider = create_provider(
             provider_type=provider_type
         )
 
@@ -115,11 +115,14 @@ class BDPCompactHandler(BaseHandler):
         )
 
         # 1. 비용 데이터 조회
-        cost_data = self.provider.get_cost_data(days=days)
-        total_services = sum(len(services) for services in cost_data.values())
+        cost_data_list = self.provider.get_cost_data(days=days)
+        total_services = len(cost_data_list)
         self.logger.info(f"조회된 서비스: {total_services}개")
 
         # 2. 비용 드리프트 탐지
+        # Detector expects Dict[str, List] format for backward compatibility
+        account_info = self.provider.get_account_info()
+        cost_data = {account_info["account_id"]: cost_data_list}
         all_results = self.detector.analyze_batch(cost_data)
 
         # 3. 최소 비용 임계값 필터링
@@ -159,7 +162,7 @@ class BDPCompactHandler(BaseHandler):
         return {
             "detection_type": "cost_drift",
             "period_days": days,
-            "accounts_analyzed": len(cost_data),
+            "accounts_analyzed": 1,  # Single account architecture
             "services_analyzed": len(filtered_results),
             "anomalies_detected": len(anomalies) > 0,
             "total_anomalies": len(anomalies),

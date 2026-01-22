@@ -1,8 +1,8 @@
-# BDP Compact Agent - Multi-Account Cost Drift Detection
+# BDP Compact Agent - Cost Drift Detection
 
 > **서브 에이전트**: BDP Compact (비용 드리프트 탐지 경량 Agent)
 >
-> PyOD ECOD 기반 Multi-Account Cost Explorer 비용 드리프트 탐지 시스템.
+> PyOD ECOD 기반 Cost Explorer 비용 드리프트 탐지 시스템.
 > 한글 Rich Summary 및 KakaoTalk 알람 지원.
 
 ## 목차
@@ -11,7 +11,7 @@
 2. [아키텍처](#아키텍처)
 3. [주요 컴포넌트](#주요-컴포넌트)
 4. [탐지 알고리즘](#탐지-알고리즘)
-5. [Multi-Account 설정](#multi-account-설정)
+5. [계정 설정](#계정-설정)
 6. [심각도 분류](#심각도-분류)
 7. [한글 Rich Summary](#한글-rich-summary)
 8. [환경 변수](#환경-변수)
@@ -25,11 +25,11 @@
 
 ## 개요
 
-BDP Compact Agent는 AWS Cost Explorer를 통해 다중 계정의 비용 변화를 모니터링하고, PyOD ECOD 알고리즘 기반으로 비용 드리프트를 탐지하는 경량 에이전트입니다.
+BDP Compact Agent는 AWS Cost Explorer를 통해 비용 변화를 모니터링하고, PyOD ECOD 알고리즘 기반으로 비용 드리프트를 탐지하는 경량 에이전트입니다.
 
 ### 주요 기능
 
-- **Multi-Account 지원**: STS AssumeRole 기반 최대 10개 계정 동시 모니터링
+- **계정별 Lambda 배포**: 각 AWS 계정에 개별 Lambda 배포 (Lambda 실행 역할 권한 사용)
 - **PyOD ECOD 탐지**: Parameter-free 이상 탐지 알고리즘 (Python 3.11+ 지원)
 - **앙상블 탐지**: ECOD + Ratio 기반 복합 판정
 - **한글 Rich Summary**: 사람이 읽기 쉬운 한글 알람 메시지 생성
@@ -64,16 +64,14 @@ flowchart TB
 
     subgraph bdp_compact["BDP Compact Agent"]
         handler["Handler"]
-        provider["Multi-Account<br/>Provider"]
+        provider["Cost Explorer<br/>Provider"]
         detector["Cost Drift<br/>Detector"]
         summary["Summary<br/>Generator"]
         publisher["Event<br/>Publisher"]
     end
 
     subgraph aws["AWS Cloud"]
-        sts["STS<br/>AssumeRole"]
-        ce1["Cost Explorer<br/>(Account 1)"]
-        ce2["Cost Explorer<br/>(Account 2)"]
+        ce["Cost Explorer"]
         eb["EventBridge"]
     end
 
@@ -86,9 +84,7 @@ flowchart TB
     api --> handler
 
     handler --> provider
-    provider --> sts
-    sts --> ce1
-    sts --> ce2
+    provider --> ce
 
     handler --> detector
     detector --> summary
@@ -130,7 +126,7 @@ flowchart LR
 |---------|------|------|
 | **Handler** | `src/agents/bdp_compact/handler.py` | Lambda/FastAPI 진입점, 전체 플로우 조율 |
 | **Anomaly Detector** | `src/agents/bdp_compact/services/anomaly_detector.py` | PyOD ECOD 기반 비용 드리프트 탐지기 |
-| **Multi-Account Provider** | `src/agents/bdp_compact/services/multi_account_provider.py` | STS AssumeRole 기반 Multi-Account Cost Explorer 접근 |
+| **Cost Explorer Provider** | `src/agents/bdp_compact/services/cost_explorer_provider.py` | Cost Explorer 접근 (Lambda 실행 역할 권한 사용) |
 | **Summary Generator** | `src/agents/bdp_compact/services/summary_generator.py` | 한글 Rich Summary 생성기 |
 | **Event Publisher** | `src/agents/bdp_compact/services/event_publisher.py` | EventBridge 이벤트 발행기 |
 | **Server** | `src/agents/bdp_compact/server.py` | FastAPI 서버 (port 8005) |
@@ -211,27 +207,19 @@ spike_duration = count_consecutive_days_above_threshold(costs, threshold)
 
 ---
 
-## Multi-Account 설정
+## 계정 설정
 
-### 환경 변수 기반 계정 설정
+### 환경 변수 설정
 
-최대 10개 계정을 환경 변수로 설정할 수 있습니다.
+각 AWS 계정에 배포되는 Lambda는 자체 실행 역할의 권한을 사용합니다.
 
-```bash
-# Account 1 (현재 자격증명 사용)
-export BDP_ACCOUNT_1_ID="111111111111"
-export BDP_ACCOUNT_1_NAME="hyundaicard-payer"
+| 변수명 | 설명 | 기본값 |
+|--------|------|--------|
+| `BDP_ACCOUNT_NAME` | 계정 식별 이름 (로그/알람용) | `default` |
 
-# Account 2 (Cross-Account AssumeRole)
-export BDP_ACCOUNT_2_ID="222222222222"
-export BDP_ACCOUNT_2_NAME="hyundaicard-member"
-export BDP_ACCOUNT_2_ROLE_ARN="arn:aws:iam::222222222222:role/CostExplorerReadOnly"
-export BDP_ACCOUNT_2_EXTERNAL_ID="your-external-id"  # 선택
-```
+### Lambda 실행 역할 권한
 
-### IAM Role 정책
-
-대상 계정에 Cost Explorer 읽기 권한 IAM Role을 생성합니다.
+Lambda 실행 역할에 Cost Explorer 읽기 권한이 필요합니다:
 
 ```json
 {
@@ -249,27 +237,24 @@ export BDP_ACCOUNT_2_EXTERNAL_ID="your-external-id"  # 선택
 }
 ```
 
-### Trust Policy
+### 배포 구조
 
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::SOURCE_ACCOUNT_ID:root"
-      },
-      "Action": "sts:AssumeRole",
-      "Condition": {
-        "StringEquals": {
-          "sts:ExternalId": "your-external-id"
-        }
-      }
-    }
-  ]
-}
+각 AWS 계정에 개별 Lambda가 배포됩니다:
+
 ```
+Account A (111111111111)
+├── Lambda: bdp-compact-agent
+└── IAM Role: bdp-compact-execution-role
+    └── Cost Explorer 읽기 권한
+
+Account B (222222222222)
+├── Lambda: bdp-compact-agent
+└── IAM Role: bdp-compact-execution-role
+    └── Cost Explorer 읽기 권한
+```
+
+> **참고**: Cross-account 권한 획득(STS AssumeRole)이 불필요합니다.
+> 각 Lambda는 자체 계정의 Cost Explorer API에 직접 접근합니다.
 
 ---
 
@@ -305,14 +290,14 @@ export BDP_ACCOUNT_2_EXTERNAL_ID="your-external-id"  # 선택
 • 보통: 1건
 • 낮음: 1건
 
-영향 계정: hyundaicard-payer, hyundaicard-member
+영향 계정: hyundaicard-payer
 
 주요 항목:
   🚨 Athena(hyundaicard-payer): 58만원 (+132.0%)
   ⚠️ Lambda(hyundaicard-payer): 12만원 (+85.3%)
-  ⚠️ EC2(hyundaicard-member): 150만원 (+67.2%)
+  ⚠️ EC2(hyundaicard-payer): 150만원 (+67.2%)
   📊 S3(hyundaicard-payer): 8만원 (+52.1%)
-  ℹ️ DynamoDB(hyundaicard-member): 5만원 (+35.0%)
+  ℹ️ DynamoDB(hyundaicard-payer): 5만원 (+35.0%)
 ```
 
 ### 비용 포맷팅 규칙
@@ -335,20 +320,11 @@ export BDP_ACCOUNT_2_EXTERNAL_ID="your-external-id"  # 선택
 | 변수명 | 설명 | 기본값 |
 |--------|------|--------|
 | `BDP_PROVIDER` | Provider 타입 (real/localstack/mock) | `mock` |
+| `BDP_ACCOUNT_NAME` | 계정 식별 이름 (로그/알람용) | `default` |
 | `BDP_SENSITIVITY` | 탐지 민감도 (0.0-1.0) | `0.7` |
 | `BDP_CURRENCY` | 통화 단위 (KRW/USD) | `KRW` |
 | `BDP_MIN_COST_THRESHOLD` | 최소 비용 임계값 | `10000` |
 | `BDP_HITL_ON_CRITICAL` | Critical시 HITL 요청 생성 | `true` |
-
-### Multi-Account 설정
-
-| 변수명 | 설명 | 기본값 |
-|--------|------|--------|
-| `BDP_ACCOUNT_{N}_ID` | N번째 계정 ID | - |
-| `BDP_ACCOUNT_{N}_NAME` | N번째 계정 이름 | `account-{N}` |
-| `BDP_ACCOUNT_{N}_ROLE_ARN` | N번째 계정 AssumeRole ARN | (현재 자격증명) |
-| `BDP_ACCOUNT_{N}_EXTERNAL_ID` | N번째 계정 External ID | - |
-| `BDP_ACCOUNT_{N}_REGION` | N번째 계정 리전 | `us-east-1` |
 
 ### EventBridge 설정
 
@@ -424,7 +400,7 @@ export BDP_ACCOUNT_2_EXTERNAL_ID="your-external-id"  # 선택
     ],
     "action_required": true,
     "hitl_request_id": "uuid-if-triggered",
-    "account_names": ["hyundaicard-payer", "hyundaicard-member"],
+    "account_name": "hyundaicard-payer",
     "detection_timestamp": "2024-01-15T10:30:00Z"
   }
 }
@@ -452,7 +428,7 @@ export BDP_ACCOUNT_2_EXTERNAL_ID="your-external-id"  # 선택
 |--------|----------|------|
 | `POST` | `/api/v1/detect` | 비용 드리프트 탐지 실행 |
 | `GET` | `/api/v1/status` | 에이전트 상태 조회 |
-| `GET` | `/api/v1/accounts` | 설정된 계정 목록 조회 |
+| `GET` | `/api/v1/account` | 현재 계정 정보 조회 |
 | `GET` | `/api/v1/hitl/pending` | 대기 중인 HITL 요청 조회 |
 | `POST` | `/api/v1/hitl/{request_id}/respond` | HITL 요청 응답 |
 
@@ -474,7 +450,7 @@ curl -X POST http://localhost:8005/api/v1/detect \
 {
   "detection_type": "cost_drift",
   "period_days": 14,
-  "accounts_analyzed": 2,
+  "accounts_analyzed": 1,
   "services_analyzed": 10,
   "anomalies_detected": true,
   "total_anomalies": 5,
@@ -624,8 +600,8 @@ curl -X POST http://localhost:8005/api/v1/detect \
   -H "Content-Type: application/json" \
   -d '{"days": 14}'
 
-# 계정 목록 조회
-curl http://localhost:8005/api/v1/accounts
+# 계정 정보 조회
+curl http://localhost:8005/api/v1/account
 ```
 
 ---
@@ -642,4 +618,3 @@ curl http://localhost:8005/api/v1/accounts
 - [PyOD Documentation](https://pyod.readthedocs.io/) - Python Outlier Detection 라이브러리
 - [ECOD Paper](https://arxiv.org/abs/2201.00382) - ECOD 알고리즘 논문
 - [AWS Cost Explorer API](https://docs.aws.amazon.com/cost-management/latest/APIReference/)
-- [Cross-Account Access](https://docs.aws.amazon.com/IAM/latest/UserGuide/tutorial_cross-account-with-roles.html)
