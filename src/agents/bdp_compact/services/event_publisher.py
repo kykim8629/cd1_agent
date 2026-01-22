@@ -11,6 +11,7 @@ import logging
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.agents.bdp_compact.services.anomaly_detector import CostDriftResult, Severity
@@ -78,6 +79,7 @@ class EventPublisher:
         region: Optional[str] = None,
         endpoint_url: Optional[str] = None,
         use_mock: bool = False,
+        config_path: Optional[str] = None,
     ):
         """EventPublisher 초기화.
 
@@ -87,9 +89,18 @@ class EventPublisher:
             region: AWS region
             endpoint_url: LocalStack endpoint (테스트용)
             use_mock: Mock 모드 사용 여부
+            config_path: EventBridge 설정 JSON 파일 경로
         """
-        self.event_bus = event_bus or os.getenv("EVENT_BUS", "cd1-agent-events")
-        self.source = source
+        # 설정 파일 로드
+        self._config = self._load_config(config_path)
+
+        self.event_bus = (
+            event_bus
+            or self._config.get("EventBusName")
+            or os.getenv("EVENT_BUS", "cd1-agent-events")
+        )
+        self.source = self._config.get("Source") or source
+        self.detail_type = self._config.get("DetailType")  # None이면 호출 시 전달된 값 사용
         self.region = region or os.getenv("AWS_REGION", "ap-northeast-2")
         self.endpoint_url = endpoint_url or os.getenv("LOCALSTACK_ENDPOINT")
         self.use_mock = use_mock or os.getenv("EVENT_PROVIDER", "").lower() == "mock"
@@ -99,8 +110,36 @@ class EventPublisher:
 
         logger.info(
             f"EventPublisher initialized: bus={self.event_bus}, "
-            f"mock={self.use_mock}"
+            f"source={self.source}, mock={self.use_mock}"
         )
+
+    def _load_config(self, config_path: Optional[str]) -> dict:
+        """JSON 설정 파일 로드.
+
+        Args:
+            config_path: 설정 파일 경로. None이면 기본 경로 사용.
+
+        Returns:
+            설정 딕셔너리. 파일이 없으면 빈 딕셔너리.
+        """
+        if config_path is None:
+            # 기본 경로: 모듈 디렉토리의 eventbridge_config.json
+            module_dir = Path(__file__).parent.parent
+            default_path = module_dir / "eventbridge_config.json"
+        else:
+            default_path = Path(config_path)
+
+        if default_path.exists():
+            try:
+                with open(default_path, encoding="utf-8") as f:
+                    config = json.load(f)
+                    logger.info(f"EventBridge config loaded from: {default_path}")
+                    return config
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Failed to load config from {default_path}: {e}")
+                return {}
+
+        return {}
 
     @property
     def client(self):
@@ -221,11 +260,14 @@ class EventPublisher:
 
         Args:
             event: 알람 이벤트
-            detail_type: 이벤트 상세 타입
+            detail_type: 이벤트 상세 타입 (설정 파일의 DetailType이 우선)
 
         Returns:
             발행 성공 여부
         """
+        # 설정 파일의 DetailType이 있으면 우선 사용
+        effective_detail_type = self.detail_type or detail_type
+
         if self.use_mock:
             self.published_events.append(event)
             logger.info(f"[MOCK] Event published: {event.title}")
@@ -237,7 +279,7 @@ class EventPublisher:
                     {
                         "EventBusName": self.event_bus,
                         "Source": self.source,
-                        "DetailType": detail_type,
+                        "DetailType": effective_detail_type,
                         "Detail": json.dumps(event.to_dict()),
                     }
                 ]

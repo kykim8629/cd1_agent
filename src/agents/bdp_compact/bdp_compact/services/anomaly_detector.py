@@ -1,8 +1,13 @@
 """
-Cost Drift Detector with PyOD ECOD.
+Cost Drift Detector with ECOD Algorithm.
 
-PyOD ECOD 기반 비용 드리프트 탐지기.
-Luminol 대신 PyOD ECOD를 사용하여 Python 3.11+ 지원 및 활발한 유지보수 활용.
+ECOD 기반 비용 드리프트 탐지기.
+PyOD ECOD 또는 경량 LightweightECOD를 사용하여 이상 탐지 수행.
+
+Features:
+- PyOD 설치 시: 고급 ECOD 알고리즘 사용
+- PyOD 미설치 시: scipy 의존성 없는 경량 ECOD 구현 (Lambda 최적화)
+- Graceful degradation: ratio 기반 fallback 지원
 """
 
 import logging
@@ -24,7 +29,136 @@ try:
     PYOD_AVAILABLE = True
 except ImportError:
     PYOD_AVAILABLE = False
-    logger.warning("PyOD not available, using fallback ratio-based detection")
+    logger.info("PyOD not available, using lightweight ECOD implementation")
+
+
+def _numpy_skew(x: np.ndarray) -> float:
+    """Calculate Fisher-Pearson skewness coefficient (scipy.stats.skew replacement).
+
+    Fisher-Pearson 왜도 계수 계산.
+    scipy.stats.skew(bias=True)와 동일한 결과를 반환.
+
+    Args:
+        x: 1D numpy array
+
+    Returns:
+        Skewness value (0 for symmetric, >0 right-skewed, <0 left-skewed)
+    """
+    n = len(x)
+    if n < 3:
+        return 0.0
+
+    mean = np.mean(x)
+    std = np.std(x, ddof=0)  # Population std for bias=True
+
+    if std == 0:
+        return 0.0
+
+    m3 = np.mean((x - mean) ** 3)
+    return m3 / (std**3)
+
+
+class LightweightECOD:
+    """Lightweight ECOD implementation without scipy dependency.
+
+    경량 ECOD (Empirical Cumulative Distribution Functions) 구현.
+    scipy 의존성 없이 numpy만으로 ECOD 알고리즘 구현.
+
+    ECOD 알고리즘:
+    1. 각 차원의 경험적 CDF (ECDF) 계산
+    2. Left-tail / Right-tail 확률 계산
+    3. Skewness로 어느 tail을 강조할지 결정
+    4. Tail 확률들을 결합하여 이상치 점수 산출
+
+    Reference:
+        Li et al., "ECOD: Unsupervised Outlier Detection Using
+        Empirical Cumulative Distribution Functions" (2022)
+
+    Usage:
+        clf = LightweightECOD(contamination=0.1)
+        clf.fit(X)
+        labels = clf.labels_  # 0: normal, 1: outlier
+        scores = clf.decision_scores_
+    """
+
+    def __init__(self, contamination: float = 0.1):
+        """Initialize LightweightECOD.
+
+        Args:
+            contamination: Expected proportion of outliers in the data (0.0 ~ 0.5)
+        """
+        if not 0.0 < contamination <= 0.5:
+            raise ValueError("contamination must be in (0, 0.5]")
+
+        self.contamination = contamination
+        self.labels_: Optional[np.ndarray] = None
+        self.decision_scores_: Optional[np.ndarray] = None
+        self.threshold_: Optional[float] = None
+
+    def fit(self, X: np.ndarray) -> "LightweightECOD":
+        """Fit the ECOD model.
+
+        Args:
+            X: Training data of shape (n_samples, n_features)
+
+        Returns:
+            self
+        """
+        X = np.asarray(X)
+        if X.ndim == 1:
+            X = X.reshape(-1, 1)
+
+        n_samples, n_features = X.shape
+
+        # Calculate outlier scores for each dimension
+        scores = np.zeros(n_samples)
+
+        for dim in range(n_features):
+            col = X[:, dim]
+
+            # Calculate empirical CDF values
+            # Left-tail: P(X <= x)
+            left_ecdf = np.array([np.mean(col <= v) for v in col])
+            # Right-tail: P(X >= x)
+            right_ecdf = np.array([np.mean(col >= v) for v in col])
+
+            # Use skewness to determine which tail to emphasize
+            skew = _numpy_skew(col)
+
+            # Add small epsilon to avoid log(0)
+            eps = 1e-10
+
+            if skew >= 0:
+                # Right-skewed distribution: outliers are in the RIGHT tail (high values)
+                # P(X >= x) is small for high outliers → -log(small) is large score
+                scores += -np.log(np.clip(right_ecdf, eps, 1.0))
+            else:
+                # Left-skewed distribution: outliers are in the LEFT tail (low values)
+                # P(X <= x) is small for low outliers → -log(small) is large score
+                scores += -np.log(np.clip(left_ecdf, eps, 1.0))
+
+        self.decision_scores_ = scores
+
+        # Determine threshold based on contamination
+        self.threshold_ = np.percentile(scores, 100 * (1 - self.contamination))
+
+        # Label outliers
+        self.labels_ = (scores >= self.threshold_).astype(int)
+
+        return self
+
+    def decision_function(self, X: np.ndarray) -> np.ndarray:
+        """Return outlier scores for X.
+
+        Args:
+            X: Data of shape (n_samples, n_features)
+
+        Returns:
+            Outlier scores for each sample
+        """
+        if self.decision_scores_ is None:
+            raise RuntimeError("Model not fitted. Call fit() first.")
+        return self.decision_scores_
 
 
 class Severity(str, Enum):
@@ -58,13 +192,18 @@ class CostDriftResult:
 
 class CostDriftDetector:
     """
-    PyOD ECOD 기반 Cost Drift 탐지기.
+    ECOD 기반 Cost Drift 탐지기.
 
     ECOD (Empirical Cumulative Distribution Functions) 특징:
     - Parameter-free: 하이퍼파라미터 튜닝 불필요
     - Fast training/inference
     - 다변량 이상 탐지에 효과적
     - Python 3.11+ 지원
+
+    구현 방식:
+    - PyOD 설치 시: pyod.models.ecod.ECOD 사용 (detection_method: "ecod")
+    - PyOD 미설치 시: LightweightECOD 사용 (detection_method: "ecod_lite")
+    - 앙상블 탐지 시: "ensemble" 또는 "ensemble_lite"
 
     Usage:
         detector = CostDriftDetector(sensitivity=0.7)
@@ -110,11 +249,8 @@ class CostDriftDetector:
         if len(historical) < self.min_data_points:
             return self._insufficient_data_result(service_data)
 
-        # ECOD 기반 탐지 시도
-        if PYOD_AVAILABLE and len(historical) >= self.min_data_points:
-            ecod_result = self._detect_ecod(historical)
-        else:
-            ecod_result = None
+        # ECOD 기반 탐지 시도 (PyOD 또는 경량 버전)
+        ecod_result = self._detect_ecod(historical)
 
         # Ratio 기반 탐지 (fallback 또는 앙상블)
         ratio_result = self._detect_ratio(historical)
@@ -140,7 +276,8 @@ class CostDriftDetector:
             is_anomaly = ecod_result["is_anomaly"]
             confidence = ecod_result["confidence"]
             raw_score = ecod_result["raw_score"]
-            detection_method = "ecod"
+            # "ecod" for PyOD, "ecod_lite" for LightweightECOD
+            detection_method = "ecod" + ecod_result.get("method_suffix", "")
         else:
             is_anomaly = ratio_result["is_anomaly"]
             confidence = ratio_result["confidence"]
@@ -150,7 +287,8 @@ class CostDriftDetector:
         # 앙상블: 두 방법 모두 이상 탐지시 신뢰도 상승
         if ecod_result and ecod_result["is_anomaly"] and ratio_result["is_anomaly"]:
             confidence = min(1.0, confidence * 1.2)
-            detection_method = "ensemble"
+            # Preserve lite suffix in ensemble mode
+            detection_method = "ensemble" + ecod_result.get("method_suffix", "")
 
         severity = self._calculate_severity(confidence, change_percent)
 
@@ -194,31 +332,37 @@ class CostDriftDetector:
         return results
 
     def _detect_ecod(self, costs: List[float]) -> Optional[Dict[str, Any]]:
-        """PyOD ECOD 기반 이상 탐지.
+        """ECOD 기반 이상 탐지 (PyOD 또는 경량 버전 사용).
+
+        PyOD가 설치된 경우 PyOD ECOD를 사용하고,
+        그렇지 않은 경우 경량 LightweightECOD를 사용.
 
         Args:
             costs: 비용 시계열 데이터
 
         Returns:
-            탐지 결과 dict 또는 None
+            탐지 결과 dict 또는 None (탐지 실패시)
         """
-        if not PYOD_AVAILABLE:
-            return None
-
         try:
             # 데이터 준비 (2D array 필요)
             X = np.array(costs).reshape(-1, 1)
 
-            # ECOD 모델 학습
-            clf = ECOD(contamination=self.contamination)
+            # PyOD 사용 가능하면 PyOD, 아니면 경량 버전
+            if PYOD_AVAILABLE:
+                clf = ECOD(contamination=self.contamination)
+                method_suffix = ""
+            else:
+                clf = LightweightECOD(contamination=self.contamination)
+                method_suffix = "_lite"
+
             clf.fit(X)
 
             # 마지막 포인트(현재)의 이상 여부 확인
             labels = clf.labels_
             scores = clf.decision_scores_
 
-            is_anomaly = labels[-1] == 1
-            raw_score = scores[-1]
+            is_anomaly = bool(labels[-1] == 1)
+            raw_score = float(scores[-1])
 
             # 점수 정규화 (0-1 범위)
             score_range = scores.max() - scores.min()
@@ -234,6 +378,7 @@ class CostDriftDetector:
                 "is_anomaly": is_anomaly or confidence >= self.confidence_threshold,
                 "confidence": confidence,
                 "raw_score": raw_score,
+                "method_suffix": method_suffix,
             }
 
         except Exception as e:

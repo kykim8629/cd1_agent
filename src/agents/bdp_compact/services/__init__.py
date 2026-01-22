@@ -7,6 +7,9 @@ Service modules for multi-account cost drift detection.
 from src.agents.bdp_compact.services.anomaly_detector import (
     CostDriftDetector,
     CostDriftResult,
+    LightweightECOD,
+    Severity,
+    _numpy_skew,
 )
 from src.agents.bdp_compact.services.event_publisher import (
     EventPublisher,
@@ -25,6 +28,9 @@ from src.agents.bdp_compact.services.summary_generator import (
 __all__ = [
     "CostDriftDetector",
     "CostDriftResult",
+    "LightweightECOD",
+    "Severity",
+    "_numpy_skew",
     "EventPublisher",
     "AlertEvent",
     "AccountConfig",
