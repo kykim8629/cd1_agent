@@ -11,6 +11,10 @@ from datetime import datetime
 from typing import List, Optional
 
 from src.agents.bdp_compact.services.anomaly_detector import CostDriftResult, Severity
+from src.agents.bdp_compact.services.chart_generator import (
+    ChartConfig,
+    CostTrendChartGenerator,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,7 @@ class AlertSummary:
     service_name: str
     account_name: str
     timestamp: str
+    chart_url: Optional[str] = None
 
 
 class SummaryGenerator:
@@ -57,13 +62,24 @@ class SummaryGenerator:
         "stable": "안정",
     }
 
-    def __init__(self, currency: str = "KRW"):
+    def __init__(
+        self,
+        currency: str = "KRW",
+        enable_chart: bool = True,
+        chart_config: Optional[ChartConfig] = None,
+    ):
         """Summary 생성기 초기화.
 
         Args:
             currency: 통화 단위 (KRW, USD)
+            enable_chart: 차트 URL 생성 여부
+            chart_config: 차트 설정 (없으면 기본값 사용)
         """
         self.currency = currency
+        self.enable_chart = enable_chart
+        self.chart_generator = (
+            CostTrendChartGenerator(config=chart_config) if enable_chart else None
+        )
 
     def generate(self, result: CostDriftResult) -> AlertSummary:
         """단일 탐지 결과에 대한 한글 요약 생성.
@@ -115,6 +131,11 @@ class SummaryGenerator:
         # 제목 생성
         title = f"{severity_emoji} 비용 드리프트: {service_display} ({result.account_name})"
 
+        # 차트 URL 생성
+        chart_url = None
+        if self.chart_generator:
+            chart_url = self.chart_generator.generate_chart_url(result)
+
         return AlertSummary(
             title=title,
             message=message,
@@ -122,6 +143,7 @@ class SummaryGenerator:
             service_name=result.service_name,
             account_name=result.account_name,
             timestamp=datetime.utcnow().isoformat(),
+            chart_url=chart_url,
         )
 
     def generate_batch_summary(

@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from src.agents.bdp_compact.services.multi_account_provider import ServiceCostData
+from src.agents.bdp_compact.services.cost_explorer_provider import ServiceCostData
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +187,9 @@ class CostDriftResult:
     spike_start_date: Optional[str] = None
     detection_method: str = "ecod"
     raw_score: float = 0.0
+    # Optional: full historical data for chart generation
+    historical_costs: Optional[List[float]] = None
+    timestamps: Optional[List[str]] = None
 
 
 class CostDriftDetector:
@@ -306,6 +309,8 @@ class CostDriftDetector:
             spike_start_date=spike_start_date,
             detection_method=detection_method,
             raw_score=round(raw_score, 4),
+            historical_costs=historical,
+            timestamps=timestamps,
         )
 
     def analyze_batch(
@@ -516,4 +521,6 @@ class CostDriftDetector:
             spike_duration_days=0,
             trend_direction="stable",
             detection_method="insufficient_data",
+            historical_costs=service_data.historical_costs,
+            timestamps=service_data.timestamps,
         )
