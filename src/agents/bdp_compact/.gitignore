@@ -1,2 +1,8 @@
-# EventBridge config (환경별 설정)
+# Config directory (환경별 설정)
+conf/*
+!conf/*.template
+
+# Legacy paths (이전 버전 호환)
 eventbridge_config.json
+kakao_tokens.json
+proxy_config.json
