@@ -73,3 +73,4 @@ layer/
 # LocalStack (BDP Agent)
 infra/bdp_agent/data/*
 !infra/bdp_agent/data/.gitkeep
+.serena/
