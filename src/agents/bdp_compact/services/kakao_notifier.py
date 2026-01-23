@@ -27,6 +27,7 @@ from urllib.parse import urlencode
 import requests
 
 from src.agents.bdp_compact.services.anomaly_detector import CostDriftResult, Severity
+from src.agents.bdp_compact.services.report_generator import CostReport
 from src.agents.bdp_compact.services.summary_generator import AlertSummary
 
 logger = logging.getLogger(__name__)
@@ -513,6 +514,18 @@ class KakaoNotifier:
         }
 
         return self._send_memo(template_object)
+
+    def send_report(self, report: CostReport, report_text: str) -> bool:
+        """비용 리포트 발송.
+
+        Args:
+            report: 비용 리포트 객체
+            report_text: 포맷팅된 리포트 텍스트
+
+        Returns:
+            발송 성공 여부
+        """
+        return self.send_text_message(report_text)
 
     def _build_reasoning(self, result: CostDriftResult) -> str:
         """신뢰도에 대한 reasoning 생성.
