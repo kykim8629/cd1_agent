@@ -66,10 +66,10 @@ raw_confidence → PatternChain → adjusted_confidence → Severity 계산
 ```
 🚨 비용 드리프트 탐지: Amazon Athena
 
-아테나(hyundaicard-payer) 비용이 일평균 25만원인데
+아테나(bdp-prod) 비용이 일평균 25만원인데
 1월 14일에 75만원으로 200% 치솟았습니다.
 
-[계정: hyundaicard-payer | 심각도: 심각]
+[계정: bdp-prod | 심각도: 심각]
 ```
 
 ### HIGH
@@ -77,8 +77,8 @@ raw_confidence → PatternChain → adjusted_confidence → Severity 계산
 ```
 ⚠️ 비용 드리프트 탐지: AWS Lambda
 
-람다(hyundaicard-payer) 비용이 일평균 8만원인데
+람다(bdp-prod) 비용이 일평균 8만원인데
 1월 14일에 18만원으로 125% 치솟았습니다.
 
-[계정: hyundaicard-payer | 심각도: 높음]
+[계정: bdp-prod | 심각도: 높음]
 ```

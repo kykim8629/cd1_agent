@@ -12,7 +12,7 @@ echo "Injecting baseline cost data for $DAYS days..."
 
 # Account configurations
 declare -A ACCOUNTS
-ACCOUNTS["111111111111"]="hyundaicard-payer"
+ACCOUNTS["111111111111"]="bdp-prod"
 ACCOUNTS["222222222222"]="hyundaicard-member"
 
 # Service configurations: service_name base_cost_krw variance_pct

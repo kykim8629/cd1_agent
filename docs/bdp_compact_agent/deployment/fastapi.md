@@ -70,7 +70,7 @@ curl -X POST http://localhost:8005/api/v1/detect \
     {
       "service_name": "Amazon Athena",
       "account_id": "111111111111",
-      "account_name": "hyundaicard-payer",
+      "account_name": "bdp-prod",
       "severity": "critical",
       "confidence_score": 0.92,
       "raw_confidence_score": 0.95,
@@ -82,7 +82,7 @@ curl -X POST http://localhost:8005/api/v1/detect \
       "trend_direction": "increasing",
       "spike_start_date": "2024-01-12",
       "detection_method": "ensemble",
-      "summary": "아테나(hyundaicard-payer) 비용이..."
+      "summary": "아테나(bdp-prod) 비용이..."
     }
   ],
   "hitl_request_id": "uuid-if-critical",
@@ -117,7 +117,7 @@ curl http://localhost:8005/api/v1/account
 ```json
 {
   "account_id": "111111111111",
-  "account_name": "hyundaicard-payer"
+  "account_name": "bdp-prod"
 }
 ```
 

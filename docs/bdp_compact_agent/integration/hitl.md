@@ -45,7 +45,7 @@ export BDP_HITL_ON_CRITICAL=false
   "context": {
     "alert_type": "cost_drift",
     "service_name": "Amazon Athena",
-    "account_name": "hyundaicard-payer",
+    "account_name": "bdp-prod",
     "current_cost": 750000,
     "historical_average": 250000,
     "change_percent": 200.0,

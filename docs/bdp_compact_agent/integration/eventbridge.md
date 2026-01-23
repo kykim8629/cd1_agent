@@ -19,7 +19,7 @@
       {
         "service_name": "Amazon Athena",
         "account_id": "111111111111",
-        "account_name": "hyundaicard-payer",
+        "account_name": "bdp-prod",
         "current_cost": 580000,
         "historical_average": 250000,
         "change_percent": 132.0,
@@ -33,7 +33,7 @@
     ],
     "action_required": true,
     "hitl_request_id": "uuid-if-triggered",
-    "account_name": "hyundaicard-payer",
+    "account_name": "bdp-prod",
     "detection_timestamp": "2024-01-15T10:30:00Z"
   }
 }
@@ -51,10 +51,10 @@
     "severity": "🚨",
     "severity_level": "critical",
     "title": "🚨 비용 드리프트 탐지: Amazon Athena",
-    "message": "아테나(hyundaicard-payer) 비용이...",
+    "message": "아테나(bdp-prod) 비용이...",
     "service_name": "Amazon Athena",
     "account_id": "111111111111",
-    "account_name": "hyundaicard-payer",
+    "account_name": "bdp-prod",
     "current_cost": 580000,
     "historical_average": 250000,
     "change_percent": 132.0,

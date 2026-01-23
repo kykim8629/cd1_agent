@@ -285,10 +285,10 @@ Account B (222222222222)
 ### 단일 이상 탐지 메시지
 
 ```
-아테나(hyundaicard-payer) 비용이 일평균 25만원인데 1월 14일에 58만원으로
+아테나(bdp-prod) 비용이 일평균 25만원인데 1월 14일에 58만원으로
 132% 치솟았고 이 상승 추세가 3일 지속되었습니다.
 
-[계정: hyundaicard-payer | 심각도: 높음]
+[계정: bdp-prod | 심각도: 높음]
 ```
 
 ### 일괄 이상 탐지 메시지
@@ -301,14 +301,14 @@ Account B (222222222222)
 • 보통: 1건
 • 낮음: 1건
 
-영향 계정: hyundaicard-payer
+영향 계정: bdp-prod
 
 주요 항목:
-  🚨 Athena(hyundaicard-payer): 58만원 (+132.0%)
-  ⚠️ Lambda(hyundaicard-payer): 12만원 (+85.3%)
-  ⚠️ EC2(hyundaicard-payer): 150만원 (+67.2%)
-  📊 S3(hyundaicard-payer): 8만원 (+52.1%)
-  ℹ️ DynamoDB(hyundaicard-payer): 5만원 (+35.0%)
+  🚨 Athena(bdp-prod): 58만원 (+132.0%)
+  ⚠️ Lambda(bdp-prod): 12만원 (+85.3%)
+  ⚠️ EC2(bdp-prod): 150만원 (+67.2%)
+  📊 S3(bdp-prod): 8만원 (+52.1%)
+  ℹ️ DynamoDB(bdp-prod): 5만원 (+35.0%)
 ```
 
 ### 비용 포맷팅 규칙
@@ -378,7 +378,7 @@ Account B (222222222222)
       {
         "service_name": "Amazon Athena",
         "account_id": "111111111111",
-        "account_name": "hyundaicard-payer",
+        "account_name": "bdp-prod",
         "current_cost": 580000,
         "historical_average": 250000,
         "change_percent": 132.0,
@@ -390,7 +390,7 @@ Account B (222222222222)
     ],
     "action_required": true,
     "hitl_request_id": "uuid-if-triggered",
-    "account_name": "hyundaicard-payer",
+    "account_name": "bdp-prod",
     "detection_timestamp": "2024-01-15T10:30:00Z"
   }
 }
@@ -455,7 +455,7 @@ curl -X POST http://localhost:8005/api/v1/detect \
     {
       "service_name": "Amazon Athena",
       "account_id": "111111111111",
-      "account_name": "hyundaicard-payer",
+      "account_name": "bdp-prod",
       "severity": "critical",
       "confidence_score": 0.92,
       "current_cost": 580000,
@@ -465,7 +465,7 @@ curl -X POST http://localhost:8005/api/v1/detect \
       "trend_direction": "increasing",
       "spike_start_date": "2024-01-12",
       "detection_method": "ensemble",
-      "summary": "아테나(hyundaicard-payer) 비용이..."
+      "summary": "아테나(bdp-prod) 비용이..."
     }
   ],
   "hitl_request_id": "uuid-if-critical",

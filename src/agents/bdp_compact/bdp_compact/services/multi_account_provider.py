@@ -346,7 +346,7 @@ class LocalStackMultiAccountProvider(BaseMultiAccountProvider):
         return [
             AccountConfig(
                 account_id="111111111111",
-                account_name="hyundaicard-payer",
+                account_name="bdp-prod",
             ),
             AccountConfig(
                 account_id="222222222222",

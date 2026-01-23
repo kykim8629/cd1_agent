@@ -332,3 +332,56 @@ def inject_bdp_baseline(
         yield True
     except Exception:
         yield False
+
+
+# ============================================================================
+# Scenario Test Fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def all_scenarios():
+    """모든 테스트 시나리오 정의."""
+    from tests.agents.bdp_compact.scenarios.scenario_factory import ScenarioFactory
+
+    return ScenarioFactory.get_all_scenarios()
+
+
+@pytest.fixture
+def scenario_cost_data(all_scenarios):
+    """모든 시나리오에 대한 ServiceCostData 생성."""
+    from tests.agents.bdp_compact.scenarios.scenario_factory import ScenarioFactory
+
+    return [ScenarioFactory.generate_cost_data(s) for s in all_scenarios]
+
+
+@pytest.fixture
+def scenario_detector():
+    """시나리오 테스트용 탐지기."""
+    from src.agents.bdp_compact.services.anomaly_detector import CostDriftDetector
+
+    return CostDriftDetector(sensitivity=0.7)
+
+
+@pytest.fixture
+def scenario_summary_generator():
+    """시나리오 테스트용 요약 생성기."""
+    from src.agents.bdp_compact.services.summary_generator import SummaryGenerator
+
+    return SummaryGenerator(currency="KRW", enable_chart=True)
+
+
+@pytest.fixture
+def scenario_chart_generator():
+    """시나리오 테스트용 차트 생성기."""
+    from src.agents.bdp_compact.services.chart_generator import CostTrendChartGenerator
+
+    return CostTrendChartGenerator()
+
+
+@pytest.fixture
+def scenario_report_generator():
+    """시나리오 테스트용 HTML 리포트 생성기."""
+    from src.agents.bdp_compact.services.html_report_generator import HTMLReportGenerator
+
+    return HTMLReportGenerator()

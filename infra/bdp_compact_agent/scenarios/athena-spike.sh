@@ -11,7 +11,7 @@ echo "Injecting Athena cost spike scenario..."
 
 TODAY=$(date +%Y-%m-%d)
 ACCOUNT_ID="111111111111"
-ACCOUNT_NAME="hyundaicard-payer"
+ACCOUNT_NAME="bdp-prod"
 SERVICE_NAME="Amazon Athena"
 
 # Spike: 일평균 25만원 → 58만원 (132% 상승)
@@ -49,7 +49,7 @@ echo ""
 echo "Athena spike scenario injected!"
 echo "Expected detection:"
 echo "  - Service: Amazon Athena"
-echo "  - Account: hyundaicard-payer"
+echo "  - Account: bdp-prod"
 echo "  - Severity: HIGH or CRITICAL"
 echo "  - Change: ~132% 상승"
 echo "  - Spike duration: 3일"

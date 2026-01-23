@@ -46,7 +46,7 @@ class TestAthenaSpikAlert:
         return ServiceCostData(
             service_name="Amazon Athena",
             account_id="111111111111",
-            account_name="hyundaicard-payer",
+            account_name="bdp-prod",
             current_cost=760000,
             historical_costs=historical_costs,
             timestamps=timestamps,
@@ -78,7 +78,7 @@ class TestAthenaSpikAlert:
 
         # 서비스 정보 확인
         assert result.service_name == "Amazon Athena"
-        assert result.account_name == "hyundaicard-payer"
+        assert result.account_name == "bdp-prod"
         assert result.current_cost == 760000
 
     def test_generate_alert_summary_korean(self, jan21_athena_spike_data):
@@ -105,7 +105,7 @@ class TestAthenaSpikAlert:
         )
 
         # 계정명 포함 확인
-        assert "hyundaicard-payer" in summary.message, (
+        assert "bdp-prod" in summary.message, (
             f"메시지에 계정명 포함되어야 함, 실제: {summary.message}"
         )
 

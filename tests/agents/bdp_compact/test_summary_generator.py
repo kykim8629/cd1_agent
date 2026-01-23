@@ -32,7 +32,7 @@ class TestSummaryGenerator:
             severity=Severity.CRITICAL,
             service_name="Amazon Athena",
             account_id="111111111111",
-            account_name="hyundaicard-payer",
+            account_name="bdp-prod",
             current_cost=580000,
             historical_average=250000,
             change_percent=132.0,
@@ -70,7 +70,7 @@ class TestSummaryGenerator:
             severity=Severity.LOW,
             service_name="Amazon S3",
             account_id="111111111111",
-            account_name="hyundaicard-payer",
+            account_name="bdp-prod",
             current_cost=130000,
             historical_average=120000,
             change_percent=8.3,
@@ -86,7 +86,7 @@ class TestSummaryGenerator:
 
         assert isinstance(summary, AlertSummary)
         assert "아테나" in summary.message or "Athena" in summary.message
-        assert "hyundaicard-payer" in summary.message
+        assert "bdp-prod" in summary.message
         assert "132%" in summary.message or "132" in summary.message
         assert "심각" in summary.message or "CRITICAL" in summary.message.upper()
 
@@ -157,7 +157,7 @@ class TestSummaryGenerator:
 
         assert "비용 드리프트" in summary.title
         assert "Athena" in summary.title or "아테나" in summary.title
-        assert "hyundaicard-payer" in summary.title
+        assert "bdp-prod" in summary.title
 
     def test_service_name_cleaning(self, generator_krw):
         """서비스명 정리 확인."""

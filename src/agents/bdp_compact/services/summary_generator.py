@@ -37,9 +37,9 @@ class SummaryGenerator:
     한글 Rich Summary 생성기.
 
     예시 출력:
-    "아테나(hyundaicard-payer) 비용이 일평균 25만원인데
+    "아테나(bdp-prod) 비용이 일평균 25만원인데
      1월 14일에 58만원으로 132% 치솟았고, 이 상승 추세가
-     3일 지속되었습니다. [계정: hyundaicard-payer | 심각도: HIGH]"
+     3일 지속되었습니다. [계정: bdp-prod | 심각도: HIGH]"
     """
 
     SEVERITY_EMOJI = {
@@ -250,7 +250,7 @@ class SummaryGenerator:
     ) -> str:
         """상세 메시지 구성.
 
-        예: "아테나(hyundaicard-payer) 비용이 일평균 25만원인데
+        예: "아테나(bdp-prod) 비용이 일평균 25만원인데
              1월 14일에 58만원으로 132% 치솟았고, 이 상승 추세가
              3일 지속되었습니다."
         """

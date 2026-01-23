@@ -11,7 +11,7 @@ echo "Injecting multi-account cost drift scenario..."
 
 TODAY=$(date +%Y-%m-%d)
 
-# Account 1: hyundaicard-payer - EC2 spike
+# Account 1: bdp-prod - EC2 spike
 echo "Account 1: EC2 spike (payer account)"
 aws --endpoint-url=$ENDPOINT dynamodb put-item \
     --table-name $TABLE_NAME \
@@ -19,7 +19,7 @@ aws --endpoint-url=$ENDPOINT dynamodb put-item \
         \"pk\": {\"S\": \"ACCOUNT#111111111111#SERVICE#Amazon EC2\"},
         \"sk\": {\"S\": \"DATE#${TODAY}\"},
         \"account_id\": {\"S\": \"111111111111\"},
-        \"account_name\": {\"S\": \"hyundaicard-payer\"},
+        \"account_name\": {\"S\": \"bdp-prod\"},
         \"service_name\": {\"S\": \"Amazon EC2\"},
         \"cost\": {\"N\": \"1500000\"},
         \"currency\": {\"S\": \"KRW\"},
@@ -41,7 +41,7 @@ for ((DAY=0; DAY<5; DAY++)); do
             \"pk\": {\"S\": \"ACCOUNT#111111111111#SERVICE#Amazon RDS\"},
             \"sk\": {\"S\": \"DATE#${DATE}\"},
             \"account_id\": {\"S\": \"111111111111\"},
-            \"account_name\": {\"S\": \"hyundaicard-payer\"},
+            \"account_name\": {\"S\": \"bdp-prod\"},
             \"service_name\": {\"S\": \"Amazon RDS\"},
             \"cost\": {\"N\": \"${COST}\"},
             \"currency\": {\"S\": \"KRW\"},
@@ -73,8 +73,8 @@ echo ""
 echo "Multi-account drift scenario injected!"
 echo ""
 echo "Expected detections:"
-echo "  1. EC2 (hyundaicard-payer): ~200% 상승 - HIGH/CRITICAL"
-echo "  2. RDS (hyundaicard-payer): gradual increase - MEDIUM"
+echo "  1. EC2 (bdp-prod): ~200% 상승 - HIGH/CRITICAL"
+echo "  2. RDS (bdp-prod): gradual increase - MEDIUM"
 echo "  3. S3 (hyundaicard-member): ~275% 상승 - HIGH/CRITICAL"
 echo ""
 echo "Run detection:"

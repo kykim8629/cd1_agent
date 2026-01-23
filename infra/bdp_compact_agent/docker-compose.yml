@@ -49,7 +49,7 @@ services:
       - LOG_LEVEL=DEBUG
       # Multi-Account 설정 (시뮬레이션)
       - BDP_ACCOUNT_1_ID=111111111111
-      - BDP_ACCOUNT_1_NAME=hyundaicard-payer
+      - BDP_ACCOUNT_1_NAME=bdp-prod
       - BDP_ACCOUNT_2_ID=222222222222
       - BDP_ACCOUNT_2_NAME=hyundaicard-member
     depends_on:
