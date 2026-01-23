@@ -425,6 +425,13 @@ class KakaoNotifier:
         if result.historical_costs and len(result.historical_costs) >= 2:
             prev_cost = result.historical_costs[-2]
 
+        # 비용 변화 문자열 생성
+        if prev_cost is not None:
+            cost_diff = result.current_cost - prev_cost
+            cost_change_str = f" ({cost_diff:+,.0f}원, {result.change_percent:+.1f}%)"
+        else:
+            cost_change_str = f" ({result.change_percent:+.1f}%)"
+
         text_content = (
             f"{emoji} {summary.title}\n"
             f"{'━' * 20}\n"
@@ -435,14 +442,7 @@ class KakaoNotifier:
             f"{reasoning}\n\n"
             f"{advice}\n\n"
             f"{'━' * 20}\n"
-            f"💰 현재 비용: {result.current_cost:,.0f}원\n"
-        )
-
-        if prev_cost is not None:
-            text_content += f"💰 전일 비용: {prev_cost:,.0f}원\n"
-
-        text_content += (
-            f"📈 변화율: {result.change_percent:+.1f}%\n"
+            f"💰 현재 비용: {result.current_cost:,.0f}원{cost_change_str}\n"
             f"📊 신뢰도: {result.confidence_score:.1%}\n"
             f"🔍 탐지 방법: {result.detection_method}"
         )
