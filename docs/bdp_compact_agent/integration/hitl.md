@@ -103,26 +103,21 @@ POST /api/v1/hitl/{request_id}/respond
 
 ## 데이터베이스 스키마
 
-HITL 요청은 RDS에 저장됩니다:
+HITL 요청은 데이터베이스에 저장됩니다. 환경에 따라 MySQL (AWS RDS) 또는 SQLite (Public Network)를 사용합니다.
 
-```sql
-CREATE TABLE hitl_requests (
-    request_id VARCHAR(36) PRIMARY KEY,
-    request_type VARCHAR(50) NOT NULL,
-    agent_id VARCHAR(50) NOT NULL,
-    context JSONB NOT NULL,
-    prompt TEXT NOT NULL,
-    options JSONB NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'pending',
-    selected_option INT,
-    comment TEXT,
-    responded_at TIMESTAMP WITH TIME ZONE,
-    responded_by VARCHAR(255)
-);
+> 📖 상세 스키마 문서: [HITL 데이터베이스 스키마](./schema.md)
 
-CREATE INDEX idx_hitl_status ON hitl_requests(status);
-CREATE INDEX idx_hitl_agent ON hitl_requests(agent_id);
-CREATE INDEX idx_hitl_expires ON hitl_requests(expires_at);
+### 스키마 파일 위치
+
 ```
+schemas/
+├── hitl_mysql.sql   # MySQL/Amazon RDS용
+└── hitl_sqlite.sql  # SQLite용 (Public Network)
+```
+
+### 지원 데이터베이스
+
+| 환경 | 데이터베이스 | 버전 |
+|------|-------------|------|
+| AWS (프로덕션) | MySQL / Amazon RDS | 8.0+ |
+| Public Network | SQLite | 3.35+ |
