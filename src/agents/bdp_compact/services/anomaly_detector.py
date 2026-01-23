@@ -8,16 +8,22 @@ Features:
 - PyOD 설치 시: 고급 ECOD 알고리즘 사용
 - PyOD 미설치 시: scipy 의존성 없는 경량 ECOD 구현 (Lambda 최적화)
 - Graceful degradation: ratio 기반 fallback 지원
+- Pattern-Aware Detection: 요일/추세 패턴 인식으로 False Positive 감소
 """
 
 import logging
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 from src.agents.bdp_compact.services.cost_explorer_provider import ServiceCostData
+from src.agents.bdp_compact.services.pattern_recognizers import (
+    PatternChain,
+    create_default_pattern_chain,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +180,7 @@ class CostDriftResult:
     """비용 드리프트 탐지 결과."""
 
     is_anomaly: bool
-    confidence_score: float  # 0.0 - 1.0
+    confidence_score: float  # 0.0 - 1.0 (패턴 조정 후)
     severity: Severity
     service_name: str
     account_id: str
@@ -187,6 +193,9 @@ class CostDriftResult:
     spike_start_date: Optional[str] = None
     detection_method: str = "ecod"
     raw_score: float = 0.0
+    # Pattern-Aware Detection fields
+    raw_confidence_score: Optional[float] = None  # 패턴 조정 전 원본 신뢰도
+    pattern_contexts: List[str] = field(default_factory=list)  # 인식된 패턴 설명
     # Optional: full historical data for chart generation
     historical_costs: Optional[List[float]] = None
     timestamps: Optional[List[str]] = None
@@ -207,6 +216,10 @@ class CostDriftDetector:
     - PyOD 미설치 시: LightweightECOD 사용 (detection_method: "ecod_lite")
     - 앙상블 탐지 시: "ensemble" 또는 "ensemble_lite"
 
+    Pattern-Aware Detection:
+    - 요일 패턴, 추세 패턴 인식으로 False Positive 감소
+    - 패턴 인식 결과에 따라 신뢰도 조정
+
     Usage:
         detector = CostDriftDetector(sensitivity=0.7)
         result = detector.analyze_service(service_data)
@@ -219,6 +232,7 @@ class CostDriftDetector:
         min_data_points: int = 7,
         ratio_threshold: float = 1.5,
         contamination: float = 0.1,
+        pattern_recognition_enabled: Optional[bool] = None,
     ):
         """탐지기 초기화.
 
@@ -227,6 +241,7 @@ class CostDriftDetector:
             min_data_points: 최소 필요 데이터 포인트 수
             ratio_threshold: Ratio 기반 탐지 임계값 (배수)
             contamination: ECOD 이상치 비율 추정값
+            pattern_recognition_enabled: 패턴 인식 활성화 (None이면 환경 변수 사용)
         """
         self.sensitivity = sensitivity
         self.min_data_points = min_data_points
@@ -235,6 +250,16 @@ class CostDriftDetector:
 
         # 민감도 기반 임계값 조정
         self.confidence_threshold = 0.6 - (sensitivity * 0.1)  # 0.5 ~ 0.6
+
+        # Pattern-Aware Detection
+        self.pattern_chain = create_default_pattern_chain(
+            enabled=pattern_recognition_enabled
+        )
+
+        # Shadow mode check
+        self.pattern_shadow_mode = os.getenv("BDP_PATTERN_MODE", "active") == "shadow"
+        if self.pattern_chain and self.pattern_shadow_mode:
+            logger.info("Pattern recognition running in shadow mode")
 
     def analyze_service(self, service_data: ServiceCostData) -> CostDriftResult:
         """단일 서비스의 비용 드리프트 분석.
@@ -276,27 +301,55 @@ class CostDriftDetector:
         # 최종 판정 (ECOD 우선, Ratio fallback)
         if ecod_result:
             is_anomaly = ecod_result["is_anomaly"]
-            confidence = ecod_result["confidence"]
+            raw_confidence = ecod_result["confidence"]
             raw_score = ecod_result["raw_score"]
             # "ecod" for PyOD, "ecod_lite" for LightweightECOD
             detection_method = "ecod" + ecod_result.get("method_suffix", "")
         else:
             is_anomaly = ratio_result["is_anomaly"]
-            confidence = ratio_result["confidence"]
+            raw_confidence = ratio_result["confidence"]
             raw_score = ratio_result["ratio"]
             detection_method = "ratio"
 
         # 앙상블: 두 방법 모두 이상 탐지시 신뢰도 상승
         if ecod_result and ecod_result["is_anomaly"] and ratio_result["is_anomaly"]:
-            confidence = min(1.0, confidence * 1.2)
+            raw_confidence = min(1.0, raw_confidence * 1.2)
             # Preserve lite suffix in ensemble mode
             detection_method = "ensemble" + ecod_result.get("method_suffix", "")
 
-        severity = self._calculate_severity(confidence, change_percent)
+        # Pattern-Aware Detection: 패턴 인식 기반 신뢰도 조정
+        adjusted_confidence = raw_confidence
+        pattern_explanations: List[str] = []
+
+        if self.pattern_chain:
+            adjustment = self.pattern_chain.get_total_adjustment(service_data)
+            pattern_explanations = self.pattern_chain.get_explanations(service_data)
+
+            if self.pattern_shadow_mode:
+                # Shadow mode: 로그만 기록, 실제 조정하지 않음
+                logger.info(
+                    f"[Shadow] Pattern adjustment for {service_data.service_name}: "
+                    f"raw={raw_confidence:.3f}, adjustment={adjustment:.3f}, "
+                    f"patterns={pattern_explanations}"
+                )
+            else:
+                # Active mode: 실제 조정 적용
+                adjusted_confidence = max(0.0, raw_confidence + adjustment)
+                if adjustment != 0:
+                    logger.debug(
+                        f"Pattern adjustment for {service_data.service_name}: "
+                        f"raw={raw_confidence:.3f} -> adjusted={adjusted_confidence:.3f}, "
+                        f"patterns={pattern_explanations}"
+                    )
+
+        # 조정된 신뢰도로 최종 anomaly 판정
+        final_is_anomaly = is_anomaly and adjusted_confidence >= self.confidence_threshold
+
+        severity = self._calculate_severity(adjusted_confidence, change_percent)
 
         return CostDriftResult(
-            is_anomaly=is_anomaly,
-            confidence_score=round(confidence, 3),
+            is_anomaly=final_is_anomaly,
+            confidence_score=round(adjusted_confidence, 3),
             severity=severity,
             service_name=service_data.service_name,
             account_id=service_data.account_id,
@@ -309,6 +362,8 @@ class CostDriftDetector:
             spike_start_date=spike_start_date,
             detection_method=detection_method,
             raw_score=round(raw_score, 4),
+            raw_confidence_score=round(raw_confidence, 3),
+            pattern_contexts=pattern_explanations,
             historical_costs=historical,
             timestamps=timestamps,
         )
@@ -521,6 +576,8 @@ class CostDriftDetector:
             spike_duration_days=0,
             trend_direction="stable",
             detection_method="insufficient_data",
+            raw_confidence_score=0.0,
+            pattern_contexts=[],
             historical_costs=service_data.historical_costs,
             timestamps=service_data.timestamps,
         )

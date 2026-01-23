@@ -1,5 +1,16 @@
 # BDP Compact Agent - Cost Drift Detection
 
+> **⚠️ DEPRECATED**: 이 문서는 더 이상 유지보수되지 않습니다.
+>
+> **새 문서 위치**: [docs/bdp_compact_agent/](bdp_compact_agent/README.md)
+>
+> 새 문서에는 다음 내용이 추가되었습니다:
+> - Pattern-Aware Detection (요일/추세 패턴 인식)
+> - 더 체계적인 문서 구조
+> - 상세한 배포 가이드
+
+---
+
 > **서브 에이전트**: BDP Compact (비용 드리프트 탐지 경량 Agent)
 >
 > PyOD ECOD 기반 Cost Explorer 비용 드리프트 탐지 시스템.
